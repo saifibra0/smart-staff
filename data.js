@@ -23,6 +23,20 @@ window.DEMO_DATA = {
     managerEmails: ['23p0317@eng.asu.edu.eg']
   },
 
+  /*
+   * Firebase project "smart-staff" (free Spark plan): sign-in and the shared
+   * database the manager reads. These values only identify the project and are
+   * meant to be public; access is controlled by the Firestore security rules.
+   */
+  firebase: {
+    apiKey: 'AIzaSyCRhKAvNMRPp4kJle02YklmN8P8uXeQK0Y',
+    authDomain: 'smart-staff-2de6a.firebaseapp.com',
+    projectId: 'smart-staff-2de6a',
+    storageBucket: 'smart-staff-2de6a.firebasestorage.app',
+    messagingSenderId: '360538043305',
+    appId: '1:360538043305:web:4956327dec754d1cdb4ab8'
+  },
+
   // Offered when staff sign up.
   departments: [
     'Dean\'s Office', 'Academic Affairs', 'Facilities', 'Laboratories', 'IT Services',

@@ -62,11 +62,16 @@
   // The department manager assigns work but is not a named person in the team list.
   STAFF.manager = { id: 'manager', name: 'Department Manager', role: 'Manager', dept: '', hue: 200 };
   const DEPARTMENTS = D.departments;
+  const hueFor = (id) => Array.from(id).reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 7);
   function addStaff(s) {
     if (STAFF[s.id]) return;
-    const hue = Array.from(s.id).reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 7);
-    STAFF[s.id] = Object.assign({ hue }, s);
+    STAFF[s.id] = Object.assign({ hue: hueFor(s.id) }, s);
     D.staff.push(s);
+  }
+  // Someone the manager sees in the shared database: known by name, but not an account on this device.
+  function knowPerson(id, account) {
+    const p = { id, name: String(account.name || 'Someone'), role: String(account.role || ''), dept: String(account.dept || '') };
+    STAFF[id] = Object.assign({ hue: hueFor(id) }, STAFF[id] || {}, p);
   }
   const person = (id) => STAFF[id] || { id, name: 'Unknown', role: '', dept: '', hue: 215 };
   const firstName = (id) => person(id).name.replace(/^Dr\.\s*/, '').split(' ')[0];
@@ -357,6 +362,7 @@
     return `
     <div class="cols">
       <div class="col-main">
+        ${managerUnverified() ? verifyCard() : ''}
         <div class="page-head">
           <div><h1>${greeting()}, ${esc(firstName(ME))}</h1><p class="sub">Here are your tasks and activities for today.</p></div>
           <span class="date-chip">${fmtLong(TODAY)} ${icon('calendar-days')}</span>
@@ -430,44 +436,73 @@
     </div>`;
   }
 
+  // Team members with their numbers: everyone in the shared database when the manager can read it,
+  // otherwise the accounts on this device and their tasks here.
+  function teamMembers() {
+    if (cloud.host && cloud.docs.length) {
+      const n = (v) => (Number.isFinite(Number(v)) ? Math.max(0, Math.round(Number(v))) : 0);
+      return cloud.docs.filter((d) => d.account && typeof d.account === 'object').map((d) => {
+        const s = d.stats && typeof d.stats === 'object' ? d.stats : {};
+        knowPerson(d.id, d.account);
+        return {
+          id: d.id, name: String(d.account.name || 'Someone'), role: String(d.account.role || ''), dept: String(d.account.dept || ''),
+          onSite: Date.parse(d.lastSeen || '') > Date.now() - 864e5, // active in the last 24 hours
+          open: Math.max(0, n(s.tasks) - n(s.completed)), overdue: n(s.overdue), done: n(s.completed),
+          notStarted: n(s.notStarted), inProgress: n(s.inProgress), awaiting: n(s.awaiting)
+        };
+      });
+    }
+    return D.staff.map((s) => {
+      const theirs = state.tasks.filter((t) => t.owner === s.id);
+      const by = (k) => theirs.filter((t) => t.status === k).length;
+      return {
+        id: s.id, name: s.name, role: s.role, dept: s.dept, onSite: s.onSite,
+        open: theirs.filter(isOpen).length, overdue: theirs.filter(isOverdue).length, done: by('completed'),
+        notStarted: by('not-started'), inProgress: by('in-progress'), awaiting: by('awaiting')
+      };
+    });
+  }
+
   function viewTeam() {
     if (!isManager()) return managerOnly();
-    const all = state.tasks;
-    const open = all.filter(isOpen);
-    const count = (s) => all.filter((t) => t.status === s).length;
-    const segs = STATUS_KEYS.map((k) => ({ label: STATUS[k].label, value: count(k), color: `var(--${STATUS[k].cls})` }));
-    const wl = D.staff.map((s) => {
-      const theirs = open.filter((t) => t.owner === s.id);
-      return { id: s.id, open: theirs.length, overdue: theirs.filter(isOverdue).length, done: all.filter((t) => t.owner === s.id && t.status === 'completed').length };
-    }).sort((a, b) => b.open - a.open || b.overdue - a.overdue);
+    const live = cloud.host && cloud.docs.length > 0;
+    const members = teamMembers();
+    const sum = (k) => members.reduce((t, m) => t + m[k], 0);
+    const segs = [['not-started', 'notStarted'], ['in-progress', 'inProgress'], ['awaiting', 'awaiting'], ['completed', 'done']]
+      .map(([k, f]) => ({ label: STATUS[k].label, value: sum(f), color: `var(--${STATUS[k].cls})` }));
+    const total = segs.reduce((t, s) => t + s.value, 0);
+    const wl = members.slice().sort((a, b) => b.open - a.open || b.overdue - a.overdue);
     const max = Math.max(1, ...wl.map((w) => w.open));
-    const onSite = D.staff.filter((s) => s.onSite).length;
+    const onSite = members.filter((m) => m.onSite).length;
+    const here = live ? 'active today' : 'on campus';
+    // With live data the task numbers live on the Users page; locally they open the department task list.
+    const drill = (filter) => (live ? { action: 'go', data: ' data-view="users"' } : { action: 'team-filter', data: ` data-filter="${filter}"` });
     const steps = [
-      { icon: 'user-plus', title: '1. Assign', text: 'Create or assign task', n: `${count('not-started')} not started` },
-      { icon: 'clock', title: '2. Prioritize', text: 'Set priority & deadline', n: `${open.filter((t) => t.priority === 'high').length} high priority` },
-      { icon: 'circle-check', title: '3. Execute', text: 'Track progress', n: `${count('in-progress')} in progress` },
-      { icon: 'clipboard-check', title: '4. Review', text: 'Check & provide feedback', n: `${count('awaiting')} awaiting` },
-      { icon: 'archive', title: '5. Close', text: 'Complete & archive', n: `${count('completed')} completed` }
+      { icon: 'user-plus', title: '1. Assign', text: 'Create or assign task', n: `${sum('notStarted')} not started` },
+      { icon: 'clock', title: '2. Prioritize', text: 'Set priority & deadline', n: `${sum('overdue')} overdue` },
+      { icon: 'circle-check', title: '3. Execute', text: 'Track progress', n: `${sum('inProgress')} in progress` },
+      { icon: 'clipboard-check', title: '4. Review', text: 'Check & provide feedback', n: `${sum('awaiting')} awaiting` },
+      { icon: 'archive', title: '5. Close', text: 'Complete & archive', n: `${sum('done')} completed` }
     ];
     const features = [['list-checks', 'Subtasks'], ['message-square', 'Comments'], ['paperclip', 'Attachments'], ['bell', 'Notifications'], ['users', 'Team Delegation'], ['badge-check', 'Manager Approvals']];
 
     return `
     <div class="stack">
-      <div class="band"><h1>Manager Team Dashboard<span>· everyone with an account</span></h1><span class="tag">Demo data</span></div>
+      <div class="band"><h1>Manager Team Dashboard<span>· ${live ? 'everyone who signed up' : 'accounts on this device'}</span></h1>${live ? '<span class="live"><i></i>Live</span>' : '<span class="tag">Demo data</span>'}</div>
       <div class="kpis">
-        ${kpi({ icon: 'users', tone: 'ip', n: D.staff.length, label: `Total Staff · ${onSite} on campus` })}
+        ${kpi({ icon: 'users', tone: 'ip', n: members.length, label: `Total Staff · ${onSite} ${here}` })}
         ${kpi({ icon: 'hourglass', tone: 'warn', n: pendingApprovals().length, label: 'Pending Approvals', action: 'go', data: ' data-view="approvals"' })}
-        ${kpi({ icon: 'circle-alert', tone: 'bad', n: all.filter(isOverdue).length, label: 'Overdue Tasks', action: 'team-filter', data: ' data-filter="overdue"' })}
-        ${kpi({ icon: 'layers', tone: 'ok', n: open.length, label: 'Active Tasks', action: 'team-filter', data: ' data-filter="all"' })}
+        ${kpi(Object.assign({ icon: 'circle-alert', tone: 'bad', n: sum('overdue'), label: 'Overdue Tasks' }, drill('overdue')))}
+        ${kpi(Object.assign({ icon: 'layers', tone: 'ok', n: sum('open'), label: 'Active Tasks' }, drill('all')))}
       </div>
       <div class="grid-2">
         <section class="card">
           <div class="card-h"><h2 class="card-title">Team Workload</h2><div class="legend"><span><i style="background:var(--ip)"></i>Open</span><span><i style="background:var(--bad)"></i>Overdue</span></div></div>
           <div class="card-body workload">
-            ${wl.map((w) => {
-              const onTime = w.open - w.overdue;
-              return `<div class="wl-row" title="${esc(person(w.id).name)}: ${w.open} open, ${w.overdue} overdue">
-                <span class="wl-name">${avatar(w.id)}<span>${esc(person(w.id).name)}</span></span>
+            ${wl.length ? '' : '<p class="note">Nobody has signed up yet.</p>'}${wl.map((w) => {
+              const onTime = Math.max(0, w.open - w.overdue);
+              return `<div class="wl-row" title="${esc(w.name)}: ${w.open} open, ${w.overdue} overdue">
+                <span class="wl-name">${avatar(w.id)}<span>${esc(w.name)}</span></span>
                 <span class="wl-track"><span class="wl-fill" style="width:${(w.open / max) * 100}%">${onTime ? `<i style="flex:${onTime}"></i>` : ''}${w.overdue ? `<i class="od" style="flex:${w.overdue}"></i>` : ''}</span></span>
                 <span class="wl-n">${w.open}${w.overdue ? `<small>(${w.overdue})</small>` : ''}</span>
               </div>`;
@@ -477,7 +512,7 @@
         <section class="card">
           <div class="card-h"><h2 class="card-title">Tasks by Status</h2></div>
           <div class="card-body donut-wrap">
-            ${donut(segs, 172, 26, all.length, 'Tasks')}
+            ${donut(segs, 172, 26, total, 'Tasks')}
             <ul class="dlegend">${segs.map((s) => `<li><i style="background:${s.color}"></i><span>${s.label}</span><b>${s.value}</b></li>`).join('')}</ul>
           </div>
         </section>
@@ -490,14 +525,11 @@
         </div>
       </section>
       <section class="card">
-        <div class="card-h"><h2 class="card-title">Team Members</h2><span class="muted">${onSite} of ${D.staff.length} on campus · from gate & RFID logs</span></div>
+        <div class="card-h"><h2 class="card-title">Team Members</h2><span class="muted">${onSite} of ${members.length} ${here} · ${live ? 'from their sign-ins' : 'from gate & RFID logs'}</span></div>
         <div class="table-scroll">
           <table class="dtable">
             <thead><tr><th>Name</th><th>Department</th><th>Presence</th><th class="n">Open</th><th class="n">Overdue</th><th class="n">Completed</th></tr></thead>
-            <tbody>${D.staff.map((s) => {
-              const w = wl.find((x) => x.id === s.id);
-              return `<tr><td><span class="who">${avatar(s.id, 'av-md')}<span>${esc(s.name)}<small>${esc(s.role)}</small></span></span></td><td>${esc(s.dept)}</td><td><span class="presence${s.onSite ? ' on' : ''}"><i></i>${s.onSite ? 'On campus' : 'Away'}</span></td><td class="n">${w.open}</td><td class="n">${w.overdue}</td><td class="n">${w.done}</td></tr>`;
-            }).join('')}</tbody>
+            <tbody>${members.map((m) => `<tr><td><span class="who">${avatar(m.id, 'av-md')}<span>${esc(m.name)}<small>${esc(m.role)}</small></span></span></td><td>${esc(m.dept)}</td><td><span class="presence${m.onSite ? ' on' : ''}"><i></i>${m.onSite ? (live ? 'Active today' : 'On campus') : (live ? 'Not today' : 'Away')}</span></td><td class="n">${m.open}</td><td class="n">${m.overdue}</td><td class="n">${m.done}</td></tr>`).join('')}</tbody>
           </table>
         </div>
       </section>
@@ -858,8 +890,10 @@
           ${plate ? `<span class="pill ip">${icon('car')}${esc(plate)} · P${D.campus.mySlot}</span>` : `<span class="pill ns">${icon('credit-card')}RFID card access</span>`}</div>
         <div class="pref-row"><div><b>Email</b><small>${acct ? esc(acct.email) : ''}</small></div>${acct ? `<span class="pill ns">Staff ID ${esc(acct.staffId)}</span>` : ''}</div>
         ${isManager()
-          ? `<div class="pref-row"><div><b>Role · Manager</b><small>You can see every user's statistics and activity. Users never see each other's data.</small></div>${onPlatform ? `<button class="btn btn-soft" data-action="go" data-view="users">${icon('chart-pie')}Open Users</button>` : ''}</div>`
-          : `<div class="pref-row"><div><b>Role · Staff</b><small>You see only your own tasks, requests and report. Other users cannot see yours.${cloud.db ? ' The manager can see your statistics and activity.' : ''}</small></div><span class="pill ns">${icon('shield-check')}Private</span></div>`}
+          ? `<div class="pref-row"><div><b>Role · Manager</b><small>You can see every user's statistics and activity. Users never see each other's data.</small></div>${onPlatform || FB ? `<button class="btn btn-soft" data-action="go" data-view="users">${icon('chart-pie')}Open Users</button>` : ''}</div>`
+          : managerUnverified()
+            ? `<div class="pref-row"><div><b>Role · Manager (email not confirmed)</b><small>Confirm your email to open the manager pages.</small></div><button class="btn btn-soft" data-action="fb-recheck">${icon('check')}I've confirmed</button></div>`
+            : `<div class="pref-row"><div><b>Role · Staff</b><small>You see only your own tasks, requests and report. Other users cannot see yours.${cloud.db || FB ? ' The manager can see your statistics and activity.' : ''}</small></div><span class="pill ns">${icon('shield-check')}Private</span></div>`}
         <div class="pref-row"><div><b>Sign out</b><small>Go back to the sign-in screen on this device.</small></div>
           <button class="btn btn-ghost" data-action="sign-out">${icon('log-out')}Sign out</button></div>
       </section>
@@ -913,7 +947,7 @@
   // Staff never get pages about other people; the manager also gets the real-user pages.
   const navItems = () => {
     if (!isManager()) return NAV.filter((n) => !MANAGER_ONLY.includes(n.id));
-    return onPlatform ? NAV.concat(MANAGER_NAV) : NAV;
+    return onPlatform || FB ? NAV.concat(MANAGER_NAV) : NAV;
   };
   const viewLabel = (v) => ({ preferences: 'Settings', activity: 'Activity', users: 'Users' }[v] || (NAV.find((n) => n.id === v) || {}).label || v);
 
@@ -1308,6 +1342,15 @@
       }
       case 'sign-out': signOut(); break;
       case 'act-filter': ui.actFilter = el.dataset.filter; render(); break;
+      case 'fb-recheck': recheckVerified(); break;
+      case 'fb-resend': {
+        const u = fbUser();
+        if (!u) break;
+        u.sendEmailVerification()
+          .then(() => toast('Confirmation email sent. Check your inbox and spam folder.'))
+          .catch(() => toast('The email could not be sent yet. Wait a minute and try again.'));
+        break;
+      }
       case 'user-activity': ui.actPerson = id || null; ui.actFilter = 'all'; go('activity'); break;
       case 'act-person': ui.actPerson = id && ui.actPerson !== id ? id : null; render(); break;
       case 'act-clear': {
@@ -1483,6 +1526,34 @@
   const inApp = () => !!document.getElementById('app');
   const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
+  /*
+   * Firebase (the GitHub Pages site): real accounts and a shared database. Each
+   * staff member writes only their own record and the verified manager email
+   * reads everyone's; the Firestore security rules enforce this, not just this
+   * page. Off on the Claude page (it has its own shared store) and wherever the
+   * Firebase scripts are not loaded, where accounts stay in the browser.
+   */
+  const FB = (() => {
+    const claudePage = !!(window.claude && typeof window.claude.use === 'function');
+    if (claudePage || !window.firebase || !D.firebase) return null;
+    try {
+      const app = window.firebase.initializeApp(D.firebase);
+      return { auth: app.auth(), store: app.firestore() };
+    } catch (e) { return null; }
+  })();
+  const fbUser = () => (FB ? FB.auth.currentUser : null);
+  const FB_ERRORS = {
+    'auth/email-already-in-use': ['email', 'An account already uses this email. Sign in instead.'],
+    'auth/invalid-email': ['email', 'Enter a valid email address.'],
+    'auth/weak-password': ['pw', 'Use at least 8 characters, with a letter and a number.'],
+    'auth/user-not-found': ['email', 'No account uses this email. Create an account first.'],
+    'auth/wrong-password': ['pw', 'Email or password is incorrect.'],
+    'auth/invalid-credential': ['pw', 'Email or password is incorrect.'],
+    'auth/invalid-login-credentials': ['pw', 'Email or password is incorrect.'],
+    'auth/too-many-requests': [null, 'Too many attempts. Wait a few minutes, then try again.'],
+    'auth/network-request-failed': [null, 'No connection to the sign-in service. Check your internet and try again.']
+  };
+
   function loadAccounts() {
     try {
       const list = JSON.parse(localStorage.getItem(ACCOUNTS_KEY) || '[]');
@@ -1497,6 +1568,28 @@
   accounts.forEach((a) => addStaff(accountToStaff(a)));
   const currentAccount = () => accounts.find((a) => a.id === ME);
   const myPlate = () => (currentAccount() || {}).plate || '';
+  function upsertAccount(acct) {
+    const i = accounts.findIndex((a) => a.id === acct.id);
+    if (i >= 0) accounts[i] = Object.assign({}, accounts[i], acct); else accounts.push(acct);
+    saveAccounts();
+    addStaff(accountToStaff(acct));
+  }
+  // A Firebase user's profile: this browser's copy, else their saved record, else their email.
+  async function accountFromCloud(u) {
+    let acct = accounts.find((a) => a.id === u.uid);
+    if (acct) return acct;
+    let saved = null;
+    try {
+      const s = await FB.store.doc(`activity/${u.uid}`).get();
+      saved = s.exists && s.data().account && typeof s.data().account === 'object' ? s.data().account : null;
+    } catch (e) { /* fall back to the email */ }
+    const email = (u.email || '').toLowerCase();
+    acct = Object.assign({ name: email.split('@')[0], staffId: '', dept: '', role: 'Staff', plate: '' }, saved || {}, { id: u.uid, email });
+    delete acct.kind;
+    upsertAccount(acct);
+    if (!state.tasks.some((t) => t.owner === acct.id)) { seedOnboarding(acct); save(); }
+    return acct;
+  }
   const emailTaken = (email) => accounts.some((a) => a.email === email);
 
   function loadSession() {
@@ -1594,7 +1687,7 @@
             <button role="tab" aria-selected="${reg}" class="${reg ? 'is-on' : ''}" data-action="auth-tab" data-tab="register">Create account</button>
           </div>
           ${reg ? registerForm() : signInForm()}
-          <p class="auth-note">${icon('info')}<span>Concept prototype with demo data, not an official ASU system. Accounts are saved only in this browser, so don't use your real university password.<span id="host-note">${cloud.db ? HOST_NOTE : ''}</span></span></p>
+          <p class="auth-note">${icon('info')}<span>Concept prototype, not an official ASU system. ${FB ? 'Choose a new password for this site, not your university password.' : 'Accounts are saved only in this browser, so don’t use your real university password.'}<span id="host-note">${cloud.db || FB ? HOST_NOTE : ''}</span></span></p>
         </div>
       </main>
     </div>`;
@@ -1638,7 +1731,7 @@
     if (!/^[A-Z0-9-]{4,12}$/.test(v.staffId)) e.staffId = 'Use 4–12 letters, numbers or dashes, as printed on your card.';
     else if (accounts.some((a) => a.staffId === v.staffId)) e.staffId = 'This staff ID is already registered.';
     if (!v.role) e.role = 'Enter your job title.';
-    if (v.plate && !/^(?=.*\d)[A-Z0-9؀-ۿ -]{3,12}$/.test(v.plate)) e.plate = 'Enter letters and numbers, like CA 1234.';
+    if (v.plate && !/^(?=.*\d)[A-Z0-9\u0600-\u06FF -]{3,12}$/.test(v.plate)) e.plate = 'Enter letters and numbers, like CA 1234.';
     if (v.pw.length < 8 || !/[A-Za-z]/.test(v.pw) || !/\d/.test(v.pw)) e.pw = 'Use at least 8 characters, with a letter and a number.';
     if (!v.pw2) e.pw2 = 'Enter the password again.';
     else if (v.pw2 !== v.pw) e.pw2 = 'Passwords do not match.';
@@ -1674,6 +1767,7 @@
 
   function signIn(id, selectId, how) {
     setSession(id);
+    if (FB) resetCloud(); // a different person may now be signed in
     cloud.signedIn = true;
     cloud.account = accountSummary();
     cloud.lastPage = 'my-day';
@@ -1681,11 +1775,18 @@
     Object.assign(ui, { view: 'my-day', drawer: false, taskScope: 'mine', taskFilter: 'all', search: '', confirmReset: false });
     ui.selected = selectId || firstOpenTaskId();
     mountApp();
+    if (FB) initCloud();
   }
 
-  function signOut() {
+  async function signOut() {
     track('signout', 'Signed out');
     cloud.signedIn = false;
+    if (FB) {
+      clearTimeout(cloud.timer);
+      await flush(); // save the sign-out before the session ends
+      FB.auth.signOut().catch(() => { /* already signed out */ });
+      resetCloud();
+    }
     clearSession();
     closeModal();
     closeSheet();
@@ -1706,18 +1807,27 @@
     const btn = f.querySelector('.btn-primary');
     btn.disabled = true;
     try {
-      const salt = randomHex(16);
-      const acct = { id: `u${Date.now().toString(36)}${randomHex(2)}`, name: v.name, email: v.email, staffId: v.staffId, dept: v.dept, role: v.role, plate: v.plate, salt, hash: await hashPassword(v.pw, salt), created: new Date().toISOString() };
-      accounts.push(acct);
-      saveAccounts();
-      addStaff(accountToStaff(acct));
+      const profile = { name: v.name, email: v.email, staffId: v.staffId, dept: v.dept, role: v.role, plate: v.plate, created: new Date().toISOString() };
+      let acct;
+      if (FB) {
+        const cred = await FB.auth.createUserWithEmailAndPassword(v.email, v.pw);
+        acct = Object.assign({ id: cred.user.uid }, profile);
+        // The manager email must be confirmed before it can read other staff's records.
+        if (D.auth.managerEmails.includes(v.email)) cred.user.sendEmailVerification().catch(() => { /* resend from My Day */ });
+      } else {
+        const salt = randomHex(16);
+        acct = Object.assign({ id: `u${Date.now().toString(36)}${randomHex(2)}`, salt, hash: await hashPassword(v.pw, salt) }, profile);
+      }
+      upsertAccount(acct);
       const first = seedOnboarding(acct);
       save();
       signIn(acct.id, first, `Created an account · ${acct.email} · ${acct.dept}`);
       toast(`Account created. Welcome, ${firstName(acct.id)}!`);
     } catch (e) {
       btn.disabled = false;
-      formError(f, e.message === 'insecure-context'
+      const known = e && FB_ERRORS[e.code];
+      if (known && known[0]) { showErrors(f, { [known[0]]: known[1] }, REG_IDS); return; }
+      formError(f, known ? known[1] : e && e.message === 'insecure-context'
         ? 'Registration needs a secure address. Open the site over https or from localhost.'
         : 'The account could not be created. Try again.');
     }
@@ -1732,6 +1842,21 @@
     if (!EMAIL_RE.test(email)) errors.email = 'Enter the email you registered with.';
     if (!pw) errors.pw = 'Enter your password.';
     if (!showErrors(f, errors, ids)) return;
+    if (FB) {
+      const btn = f.querySelector('.btn-primary');
+      btn.disabled = true;
+      try {
+        const cred = await FB.auth.signInWithEmailAndPassword(email, pw);
+        const acct = await accountFromCloud(cred.user);
+        signIn(acct.id, null, `Signed in · ${acct.email}`);
+        toast(`Signed in as ${acct.name}`);
+      } catch (e) {
+        btn.disabled = false;
+        const known = (e && FB_ERRORS[e.code]) || [null, 'Sign-in failed. Try again.'];
+        if (known[0]) showErrors(f, { [known[0]]: known[1] }, ids); else formError(f, known[1]);
+      }
+      return;
+    }
     const acct = accounts.find((a) => a.email === email);
     if (!acct) {
       showErrors(f, { email: 'No account uses this email. Create an account first.' }, ids);
@@ -1759,7 +1884,7 @@
   const cloud = {
     ready: false, db: null, user: null, uid: null, host: false, off: false,
     loaded: false, mine: null, pending: [], writing: false, timer: null, retries: 0,
-    signedIn: false, account: null, lastPage: null, docs: [], profiles: {}
+    signedIn: false, account: null, lastPage: null, docs: [], profiles: {}, unsub: null
   };
 
   /*
@@ -1771,7 +1896,36 @@
   const onPlatform = !!(window.claude && typeof window.claude.use === 'function');
   const HOST_NOTE = ' Other users cannot see your data. The manager of this page can see your statistics and activity.';
   const managerEmail = () => { const a = currentAccount(); return !!a && D.auth.managerEmails.includes(a.email); };
-  function isManager() { return managerEmail() && (!onPlatform || cloud.host); }
+  // On Firebase the manager email must also be confirmed, as the database rules require.
+  const managerUnverified = () => !!FB && managerEmail() && !(fbUser() && fbUser().emailVerified);
+  function isManager() {
+    if (!managerEmail()) return false;
+    if (onPlatform) return cloud.host;
+    if (FB) return !managerUnverified();
+    return true;
+  }
+
+  function verifyCard() {
+    const a = currentAccount() || {};
+    return `<section class="card verify-card">
+      <span class="li-ico tone-aw">${icon('mail')}</span>
+      <div><b>Confirm your email to open the manager pages</b>
+        <span>A confirmation link was sent to ${esc(a.email)}. Open it (check spam too), then come back and click “I've confirmed”.</span></div>
+      <div class="acts"><button class="btn btn-primary sm" data-action="fb-recheck">${icon('check')}I've confirmed</button><button class="btn btn-ghost sm" data-action="fb-resend">Send the link again</button></div>
+    </section>`;
+  }
+
+  async function recheckVerified() {
+    const u = fbUser();
+    if (!u) return;
+    try { await u.reload(); await u.getIdToken(true); } catch (e) { /* keep the current state */ }
+    if (!(fbUser() && fbUser().emailVerified)) { toast('Not confirmed yet. Open the link in the email first.'); return; }
+    toast('Email confirmed. Manager pages unlocked.');
+    resetCloud();
+    Object.assign(cloud, { signedIn: true, account: accountSummary() });
+    render();
+    initCloud();
+  }
   const managerOnly = () => `<div class="stack"><section class="card empty">${icon('lock')}<b>Managers only</b><span>This page shows other people's work, so only the manager can open it. Your own tasks, requests and report are in the menu.</span></section></div>`;
 
   // The signed-in user's own numbers, sent with their activity for the manager's statistics.
@@ -1847,11 +2001,46 @@
   }
 
   function subscribeHost() {
-    cloud.db.collection('activity').onSnapshot((snap) => {
+    cloud.unsub = cloud.db.collection('activity').onSnapshot((snap) => {
       cloud.docs = snap.docs.filter((d) => d.exists).map((d) => Object.assign({ id: d.id }, d.data()));
+      cloud.docs.forEach((d) => { if (d.account && typeof d.account === 'object') knowPerson(d.id, d.account); });
       resolveProfiles();
-      if (inApp() && (ui.view === 'activity' || ui.view === 'users')) render();
+      if (inApp() && ['activity', 'users', 'team'].includes(ui.view)) render();
     }, () => { /* the live feed stopped; the rest of the page keeps working */ });
+  }
+
+  // Forget the signed-in person's cloud state (Firebase: someone else may sign in next).
+  function resetCloud() {
+    if (cloud.unsub) { try { cloud.unsub(); } catch (e) { /* already stopped */ } }
+    clearTimeout(cloud.timer);
+    Object.assign(cloud, {
+      ready: false, db: null, user: null, uid: null, host: false, off: false, loaded: false, mine: null,
+      pending: [], writing: false, timer: null, retries: 0, docs: [], profiles: {}, unsub: null
+    });
+  }
+
+  // The same small db/user surface the Claude page offers, backed by Firestore and Firebase Auth.
+  function firebaseCloud(u) {
+    const wrap = (s) => ({ id: s.id, exists: s.exists, data: () => s.data() });
+    const db = {
+      doc: (path) => {
+        const ref = FB.store.doc(path);
+        return { get: async () => wrap(await ref.get()), set: (d) => ref.set(d), delete: () => ref.delete() };
+      },
+      collection: (path) => ({
+        onSnapshot: (next, err) => FB.store.collection(path).onSnapshot((q) => next({ docs: q.docs.map(wrap) }), err)
+      })
+    };
+    const user = {
+      id: async () => u.uid,
+      isOwner: async () => !!u.emailVerified && D.auth.managerEmails.includes((u.email || '').toLowerCase()),
+      // Names come from each person's own record; there are no profile photos.
+      profiles: async (ids) => Object.fromEntries([].concat(ids).map((id) => {
+        const d = cloud.docs.find((x) => x.id === id);
+        return [id, { id, name: (d && d.account && d.account.name) || '', avatarUrl: '' }];
+      }))
+    };
+    return { db, user };
   }
 
   // Names and photos come from Claude accounts, resolved fresh each time (never stored).
@@ -1866,8 +2055,15 @@
 
   async function initCloud() {
     try {
-      if (!window.claude || typeof window.claude.use !== 'function') { cloud.off = true; return; }
-      const [db, user] = await Promise.all([window.claude.use('db'), window.claude.use('user')]);
+      let db;
+      let user;
+      if (FB) {
+        if (!fbUser()) { cloud.off = true; return; }
+        ({ db, user } = firebaseCloud(fbUser()));
+      } else {
+        if (!window.claude || typeof window.claude.use !== 'function') { cloud.off = true; return; }
+        [db, user] = await Promise.all([window.claude.use('db'), window.claude.use('user')]);
+      }
       if (!db || !user) { cloud.off = true; return; }
       const uid = await user.id();
       if (!uid) { cloud.off = true; return; }
@@ -1914,15 +2110,19 @@
 
   // The manager pages read everyone's log, so they open only for the page owner on the published page.
   function managerGate() {
-    if (!onPlatform) return `<div class="stack"><section class="card empty">${icon('cloud')}<b>Available on the published page</b><span>User statistics and activity come from the shared store of the published Claude page. This copy runs only in your browser.</span></section></div>`;
+    if (!onPlatform && !FB) return `<div class="stack"><section class="card empty">${icon('cloud')}<b>Needs the shared database</b><span>User statistics and activity come from a shared database. This copy runs only in your browser.</span></section></div>`;
+    if (managerUnverified()) return `<div class="stack">${verifyCard()}</div>`;
     if (!cloud.ready) return `<div class="stack"><section class="card empty">${icon('loader')}<b>Checking manager access…</b></section></div>`;
     if (!isManager()) return managerOnly();
     return '';
   }
-  const who = (id) => (cloud.profiles[id] && cloud.profiles[id].name) || 'Someone';
-  const face = (id, cls) => (cloud.profiles[id]
-    ? `<img class="av-img${cls ? ' ' + cls : ''}" src="${esc(cloud.profiles[id].avatarUrl)}" alt="">`
-    : `<span class="av${cls ? ' ' + cls : ''}" style="--h:210" aria-hidden="true">?</span>`);
+  const who = (id) => (cloud.profiles[id] && cloud.profiles[id].name) || (STAFF[id] && STAFF[id].name) || 'Someone';
+  function face(id, cls) {
+    const p = cloud.profiles[id];
+    if (p && p.avatarUrl) return `<img class="av-img${cls ? ' ' + cls : ''}" src="${esc(p.avatarUrl)}" alt="">`;
+    if (STAFF[id]) return avatar(id, cls);
+    return `<span class="av${cls ? ' ' + cls : ''}" style="--h:210" aria-hidden="true">?</span>`;
+  }
   const byLastSeen = () => cloud.docs.slice().sort((a, b) => String(b.lastSeen || '').localeCompare(String(a.lastSeen || '')));
 
   function viewActivity() {
@@ -2116,24 +2316,43 @@
       save();
     }
 
-    const user = loadSession();
-    if (user) {
-      ME = user;
-      cloud.signedIn = true;
-      cloud.account = accountSummary();
-      cloud.lastPage = ui.view;
-      const t = findTask(ui.selected);
-      if (!t || !isMine(t)) ui.selected = firstOpenTaskId();
-      mountApp();
-      // One "returned" entry per browser session, not one per reload.
-      let seen = false;
-      try { seen = sessionStorage.getItem('asu-foe-smart-staff:visit') === '1'; sessionStorage.setItem('asu-foe-smart-staff:visit', '1'); } catch (e) { /* count it */ }
-      if (!seen) track('visit', 'Returned to the dashboard');
-    } else {
-      mountAuth();
-    }
     setInterval(tick, 4000);
+    if (FB) { bootFirebase(); return; }
+    const user = loadSession();
+    if (user) resume(user); else mountAuth();
     initCloud();
+  }
+
+  // Opens the dashboard for someone who is already signed in.
+  function resume(id) {
+    ME = id;
+    cloud.signedIn = true;
+    cloud.account = accountSummary();
+    cloud.lastPage = ui.view;
+    const t = findTask(ui.selected);
+    if (!t || !isMine(t)) ui.selected = firstOpenTaskId();
+    mountApp();
+    // One "returned" entry per browser session, not one per reload.
+    let seen = false;
+    try { seen = sessionStorage.getItem('asu-foe-smart-staff:visit') === '1'; sessionStorage.setItem('asu-foe-smart-staff:visit', '1'); } catch (e) { /* count it */ }
+    if (!seen) track('visit', 'Returned to the dashboard');
+  }
+
+  // Firebase remembers who is signed in; wait for its answer before showing either screen.
+  function bootFirebase() {
+    $('#root').innerHTML = `<div class="boot">${icon('loader')}<span>Loading…</span></div>`;
+    paintIcons();
+    let settled = false;
+    const fallback = setTimeout(() => { if (!settled) { settled = true; mountAuth(); } }, 8000);
+    FB.auth.onAuthStateChanged(async (u) => {
+      if (settled) return; // later changes come from this page's own sign-in and sign-out
+      settled = true;
+      clearTimeout(fallback);
+      if (!u) { mountAuth(); return; }
+      const acct = await accountFromCloud(u);
+      resume(acct.id);
+      initCloud();
+    });
   }
 
   function bindShell() {

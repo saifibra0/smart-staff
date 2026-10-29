@@ -1077,6 +1077,23 @@ button.kpi:hover { border-color: var(--accent); }
 .person-main small { display: block; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 .band .live { flex: none; }
 .wl-fill i.ok { background: var(--ok); }
+.verify-card {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 14px; align-items: center;
+  padding: 14px 16px;
+  border-color: var(--aw);
+  background: var(--aw-bg);
+}
+.verify-card b { display: block; font-size: 14px; color: var(--fg); }
+.verify-card span:not(.li-ico) { display: block; font-size: 13px; color: var(--fg-2); margin-top: 2px; }
+.verify-card .acts { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.boot { min-height: 100vh; display: grid; place-content: center; justify-items: center; gap: 10px; color: var(--muted); background: var(--bg); }
+.boot svg.lucide { width: 26px; height: 26px; animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (max-width: 560px) {
+  .verify-card { grid-template-columns: auto minmax(0, 1fr); }
+  .verify-card .acts { grid-column: 1 / -1; justify-content: stretch; }
+  .verify-card .acts .btn { flex: 1; }
+}
 .dtable .who small { overflow-wrap: anywhere; }
 .who-row { display: flex; align-items: center; gap: 12px; }
 .p-badge svg.lucide { width: 18px; height: 18px; }
