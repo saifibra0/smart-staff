@@ -1561,6 +1561,8 @@
     } catch (e) { return []; }
   }
   let accounts = loadAccounts();
+  // Accounts made in this browser before Firebase (they carry a local password hash) cannot sign in to Firebase.
+  if (FB && accounts.some((a) => a.hash)) { accounts = accounts.filter((a) => !a.hash); saveAccounts(); }
   function saveAccounts() {
     try { localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(accounts)); } catch (e) { /* account lasts for this visit only */ }
   }
@@ -1590,7 +1592,8 @@
     if (!state.tasks.some((t) => t.owner === acct.id)) { seedOnboarding(acct); save(); }
     return acct;
   }
-  const emailTaken = (email) => accounts.some((a) => a.email === email);
+  // With Firebase, Firebase itself rejects a second account with the same email.
+  const emailTaken = (email) => !FB && accounts.some((a) => a.email === email);
 
   function loadSession() {
     try {
@@ -1729,7 +1732,7 @@
     else if (domains.length && !domains.some((d) => v.email.endsWith(`@${d}`))) e.email = `Use your faculty email ending in @${domains.join(' or @')}.`;
     else if (emailTaken(v.email)) e.email = 'An account already uses this email. Sign in instead.';
     if (!/^[A-Z0-9-]{4,12}$/.test(v.staffId)) e.staffId = 'Use 4–12 letters, numbers or dashes, as printed on your card.';
-    else if (accounts.some((a) => a.staffId === v.staffId)) e.staffId = 'This staff ID is already registered.';
+    else if (!FB && accounts.some((a) => a.staffId === v.staffId)) e.staffId = 'This staff ID is already registered.';
     if (!v.role) e.role = 'Enter your job title.';
     if (v.plate && !/^(?=.*\d)[A-Z0-9\u0600-\u06FF -]{3,12}$/.test(v.plate)) e.plate = 'Enter letters and numbers, like CA 1234.';
     if (v.pw.length < 8 || !/[A-Za-z]/.test(v.pw) || !/\d/.test(v.pw)) e.pw = 'Use at least 8 characters, with a letter and a number.';
