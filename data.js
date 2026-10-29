@@ -24,29 +24,25 @@ window.DEMO_DATA = {
     demoEmail: 'ahmed.hassan@eng.asu.edu.eg'
   },
 
+  // Offered when staff sign up.
+  departments: [
+    'Dean\'s Office', 'Academic Affairs', 'Facilities', 'Laboratories', 'IT Services',
+    'Quality Unit', 'Student Affairs', 'Finance', 'Human Resources', 'Campus Security'
+  ],
+
+  // Only the demo account. Real staff join this list when they create accounts.
   staff: [
-    { id: 'ahmed',   name: 'Ahmed Hassan',     role: 'Administrative Staff',  dept: 'Dean\'s Office',   onSite: true },
-    { id: 'sara',    name: 'Sara Mohamed',     role: 'Academic Coordinator',  dept: 'Academic Affairs', onSite: true },
-    { id: 'mohamed', name: 'Mohamed Ali',      role: 'Facilities Officer',    dept: 'Facilities',       onSite: true },
-    { id: 'nourhan', name: 'Nourhan Adel',     role: 'Lab Engineer',          dept: 'Laboratories',     onSite: true },
-    { id: 'mostafa', name: 'Mostafa Ibrahim',  role: 'IT Support',            dept: 'IT Services',      onSite: true },
-    { id: 'mariam',  name: 'Mariam Khaled',    role: 'Quality Assurance',     dept: 'Quality Unit',     onSite: false },
-    { id: 'omar',    name: 'Omar Farouk',      role: 'Student Affairs',       dept: 'Student Affairs',  onSite: true },
-    { id: 'yasmin',  name: 'Yasmin Samir',     role: 'Finance Officer',       dept: 'Finance',          onSite: true },
-    { id: 'karim',   name: 'Karim Mahmoud',    role: 'Lab Technician',        dept: 'Laboratories',     onSite: false },
-    { id: 'hana',    name: 'Hana Youssef',     role: 'HR Specialist',         dept: 'Human Resources',  onSite: true },
-    { id: 'tarek',   name: 'Tarek Nabil',      role: 'Security Supervisor',   dept: 'Campus Security',  onSite: true },
-    { id: 'laila',   name: 'Dr. Laila Mansour',role: 'Head of Department',    dept: 'Dean\'s Office',   onSite: true }
+    { id: 'ahmed', name: 'Ahmed Hassan', role: 'Administrative Staff', dept: 'Dean\'s Office', onSite: true }
   ],
 
   /*
    * status: not-started | in-progress | awaiting | completed
    * priority: high | medium | low
-   * owner = who does the work, by = who assigned it
+   * owner = who does the work, by = who assigned it ('manager' = the department manager)
    */
   tasks: [
     {
-      id: 't1', title: 'Prepare department report', priority: 'high', owner: 'ahmed', by: 'laila',
+      id: 't1', title: 'Prepare department report', priority: 'high', owner: 'ahmed', by: 'manager',
       due: '2026-10-20', status: 'in-progress',
       desc: 'Prepare the monthly department report including academic activities, research, and administrative updates for submission to the faculty management.',
       subtasks: [
@@ -61,15 +57,15 @@ window.DEMO_DATA = {
         { name: 'Data_Summary.xlsx', size: '128 KB', kind: 'sheet' }
       ],
       comments: [
-        { by: 'sara', at: 'Today, 10:15 AM', text: 'Please include the latest research activities.' }
+        { by: 'manager', at: 'Today, 10:15 AM', text: 'Please include the latest research activities.' }
       ],
       log: [
         { by: 'ahmed', at: '10:12 AM', text: 'Updated task status to In Progress' },
-        { by: 'sara', at: '10:15 AM', text: 'Added a comment' }
+        { by: 'manager', at: '10:15 AM', text: 'Added a comment' }
       ]
     },
     {
-      id: 't2', title: 'Review exam timetable', priority: 'medium', owner: 'sara', by: 'ahmed',
+      id: 't2', title: 'Review exam timetable', priority: 'medium', owner: 'ahmed', by: 'manager',
       due: '2026-10-20', status: 'not-started',
       desc: 'Check the midterm timetable for room clashes and invigilator coverage before it is published to students.',
       subtasks: [
@@ -78,21 +74,21 @@ window.DEMO_DATA = {
         { t: 'Send to student affairs', done: false }
       ],
       files: [{ name: 'Midterm_Timetable_v3.xlsx', size: '86 KB', kind: 'sheet' }],
-      comments: [], log: [{ by: 'ahmed', at: 'Yesterday', text: 'Assigned task to Sara Mohamed' }]
+      comments: [], log: []
     },
     {
-      id: 't3', title: 'Approve maintenance request', priority: 'high', owner: 'mohamed', by: 'ahmed',
+      id: 't3', title: 'Approve maintenance request', priority: 'high', owner: 'ahmed', by: 'manager',
       due: '2026-10-20', status: 'awaiting',
-      desc: 'AC maintenance for Room 203 (#SR-1045). The facilities team needs approval of the vendor quote before work starts.',
+      desc: 'AC maintenance for Room 203 (#SR-1045). The vendor quote is attached and waiting for sign-off.',
       subtasks: [
-        { t: 'Review vendor quote', done: false },
-        { t: 'Confirm budget line', done: false }
+        { t: 'Review vendor quote', done: true },
+        { t: 'Confirm budget line', done: true }
       ],
       files: [{ name: 'AC_Vendor_Quote.pdf', size: '312 KB', kind: 'doc' }],
-      comments: [], log: [{ by: 'mohamed', at: '08:55 AM', text: 'Requested approval' }]
+      comments: [], log: [{ by: 'ahmed', at: '08:55 AM', text: 'Requested approval' }]
     },
     {
-      id: 't4', title: 'Submit accreditation evidence', priority: 'medium', owner: 'ahmed', by: 'laila',
+      id: 't4', title: 'Submit accreditation evidence', priority: 'medium', owner: 'ahmed', by: 'manager',
       due: '2026-10-22', status: 'in-progress',
       desc: 'Upload the evidence files requested by the accreditation committee for Standard 4 (teaching and learning).',
       subtasks: [
@@ -105,7 +101,7 @@ window.DEMO_DATA = {
       files: [], comments: [], log: [{ by: 'ahmed', at: 'Yesterday', text: 'Completed 2 subtasks' }]
     },
     {
-      id: 't5', title: 'Update laboratory inventory', priority: 'low', owner: 'nourhan', by: 'ahmed',
+      id: 't5', title: 'Update laboratory inventory', priority: 'low', owner: 'ahmed', by: 'manager',
       due: '2026-10-23', status: 'not-started',
       desc: 'Record new equipment received this month and flag items that need calibration.',
       subtasks: [
@@ -126,45 +122,12 @@ window.DEMO_DATA = {
       ],
       files: [], comments: [], log: []
     },
-    {
-      id: 't7', title: 'Approve lab equipment purchase', priority: 'high', owner: 'karim', by: 'ahmed',
-      due: '2026-10-27', status: 'awaiting',
-      desc: 'Purchase order for two digital oscilloscopes for the electronics lab.',
-      subtasks: [], files: [{ name: 'PO_Oscilloscopes.pdf', size: '190 KB', kind: 'doc' }], comments: [],
-      log: [{ by: 'karim', at: 'Yesterday', text: 'Requested approval' }]
-    },
-    // Completed this week (assigned by or owned by Ahmed)
-    { id: 't8',  title: 'Book hall for accreditation visit', priority: 'medium', owner: 'ahmed', by: 'laila', due: '2026-10-19', status: 'completed', completedOn: '2026-10-19', desc: '', subtasks: [], files: [], comments: [], log: [] },
-    { id: 't9',  title: 'Send weekly attendance report', priority: 'low', owner: 'ahmed', by: 'laila', due: '2026-10-19', status: 'completed', completedOn: '2026-10-19', desc: '', subtasks: [], files: [], comments: [], log: [] },
-    { id: 't10', title: 'Update staff contact directory', priority: 'low', owner: 'hana', by: 'ahmed', due: '2026-10-18', status: 'completed', completedOn: '2026-10-18', desc: '', subtasks: [], files: [], comments: [], log: [] },
-    { id: 't11', title: 'Collect lab safety forms', priority: 'medium', owner: 'nourhan', by: 'ahmed', due: '2026-10-19', status: 'completed', completedOn: '2026-10-19', desc: '', subtasks: [], files: [], comments: [], log: [] },
-    { id: 't12', title: 'Schedule exam invigilators', priority: 'high', owner: 'sara', by: 'ahmed', due: '2026-10-19', status: 'completed', completedOn: '2026-10-19', desc: '', subtasks: [], files: [], comments: [], log: [] },
+    // Completed this week
+    { id: 't8',  title: 'Book hall for accreditation visit', priority: 'medium', owner: 'ahmed', by: 'manager', due: '2026-10-19', status: 'completed', completedOn: '2026-10-19', desc: '', subtasks: [], files: [], comments: [], log: [] },
+    { id: 't9',  title: 'Send weekly attendance report', priority: 'low', owner: 'ahmed', by: 'manager', due: '2026-10-19', status: 'completed', completedOn: '2026-10-19', desc: '', subtasks: [], files: [], comments: [], log: [] },
     { id: 't13', title: 'Order office supplies', priority: 'low', owner: 'ahmed', by: 'ahmed', due: '2026-10-20', status: 'completed', completedOn: '2026-10-20', desc: '', subtasks: [], files: [], comments: [], log: [] },
     { id: 't14', title: 'Archive September correspondence', priority: 'low', owner: 'ahmed', by: 'ahmed', due: '2026-10-21', status: 'completed', completedOn: '2026-10-20', desc: '', subtasks: [], files: [], comments: [], log: [] },
-    { id: 't15', title: 'Prepare agenda for coordination meeting', priority: 'medium', owner: 'ahmed', by: 'laila', due: '2026-10-20', status: 'completed', completedOn: '2026-10-20', desc: '', subtasks: [], files: [], comments: [], log: [] },
-
-    // The rest of the department
-    { id: 't16', title: 'Prepare semester budget summary', priority: 'high', owner: 'yasmin', by: 'laila', due: '2026-10-23', status: 'in-progress', desc: 'Summarize spending against the semester budget for the faculty council.', subtasks: [{ t: 'Export ledger', done: true }, { t: 'Reconcile lab spending', done: false }, { t: 'Write summary', done: false }], files: [], comments: [], log: [] },
-    { id: 't17', title: 'Upgrade lab PCs to new image', priority: 'medium', owner: 'mostafa', by: 'laila', due: '2026-10-21', status: 'in-progress', desc: 'Re-image the 40 PCs in the computer lab with the new semester build.', subtasks: [{ t: 'Prepare image', done: true }, { t: 'Rows 1–4', done: true }, { t: 'Rows 5–8', done: false }], files: [], comments: [], log: [] },
-    { id: 't18', title: 'Plan student orientation week', priority: 'medium', owner: 'omar', by: 'laila', due: '2026-10-26', status: 'in-progress', desc: '', subtasks: [{ t: 'Book auditorium', done: true }, { t: 'Confirm speakers', done: false }, { t: 'Print guides', done: false }, { t: 'Assign volunteers', done: false }], files: [], comments: [], log: [] },
-    { id: 't19', title: 'Renew software licenses', priority: 'high', owner: 'mostafa', by: 'laila', due: '2026-10-19', status: 'in-progress', desc: 'MATLAB and AutoCAD campus licenses expire this month.', subtasks: [{ t: 'Get quotes', done: true }, { t: 'Submit purchase order', done: false }], files: [], comments: [], log: [] },
-    { id: 't20', title: 'Draft quality assurance report', priority: 'high', owner: 'mariam', by: 'laila', due: '2026-10-22', status: 'in-progress', desc: '', subtasks: [{ t: 'Outline', done: true }, { t: 'Collect KPIs', done: true }, { t: 'Draft', done: false }, { t: 'Review', done: false }], files: [], comments: [], log: [] },
-    { id: 't21', title: 'Coordinate visitor parking permits', priority: 'low', owner: 'tarek', by: 'laila', due: '2026-10-21', status: 'in-progress', desc: 'Issue temporary permits for the accreditation visitors.', subtasks: [{ t: 'Collect plate numbers', done: true }, { t: 'Register plates at gate', done: false }], files: [], comments: [], log: [] },
-    { id: 't22', title: 'Update staff training records', priority: 'medium', owner: 'hana', by: 'laila', due: '2026-10-18', status: 'in-progress', desc: '', subtasks: [{ t: 'Import attendance sheets', done: true }, { t: 'Update HR system', done: false }], files: [], comments: [], log: [] },
-    { id: 't23', title: 'Calibrate lab equipment', priority: 'medium', owner: 'karim', by: 'laila', due: '2026-10-24', status: 'in-progress', desc: '', subtasks: [{ t: 'Multimeters', done: true }, { t: 'Power supplies', done: false }, { t: 'Oscilloscopes', done: false }], files: [], comments: [], log: [] },
-    { id: 't24', title: 'Compile course evaluation results', priority: 'medium', owner: 'sara', by: 'laila', due: '2026-10-23', status: 'in-progress', desc: '', subtasks: [{ t: 'Download survey results', done: true }, { t: 'Build summary tables', done: false }], files: [], comments: [], log: [] },
-    { id: 't25', title: 'Review fire safety checklist', priority: 'high', owner: 'tarek', by: 'laila', due: '2026-10-21', status: 'not-started', desc: '', subtasks: [], files: [], comments: [], log: [] },
-    { id: 't26', title: 'Organize research seminar', priority: 'low', owner: 'sara', by: 'laila', due: '2026-10-29', status: 'not-started', desc: '', subtasks: [], files: [], comments: [], log: [] },
-    { id: 't27', title: 'Inventory chemistry lab reagents', priority: 'low', owner: 'karim', by: 'laila', due: '2026-10-28', status: 'not-started', desc: '', subtasks: [], files: [], comments: [], log: [] },
-    { id: 't28', title: 'Prepare payroll adjustments', priority: 'medium', owner: 'yasmin', by: 'laila', due: '2026-10-17', status: 'not-started', desc: '', subtasks: [], files: [], comments: [], log: [] },
-    { id: 't29', title: 'Set up RFID cards for new staff', priority: 'medium', owner: 'mostafa', by: 'laila', due: '2026-10-22', status: 'not-started', desc: 'Register three new staff ID cards on the RC522 gate readers.', subtasks: [], files: [], comments: [], log: [] },
-    { id: 't30', title: 'Plan recruitment interviews', priority: 'low', owner: 'hana', by: 'laila', due: '2026-10-30', status: 'not-started', desc: '', subtasks: [], files: [], comments: [], log: [] },
-    { id: 't31', title: 'Approve overtime requests', priority: 'medium', owner: 'hana', by: 'laila', due: '2026-10-21', status: 'awaiting', desc: '', subtasks: [], files: [], comments: [], log: [] },
-    { id: 't32', title: 'Approve conference travel', priority: 'low', owner: 'mariam', by: 'laila', due: '2026-10-23', status: 'awaiting', desc: '', subtasks: [], files: [], comments: [], log: [] },
-    { id: 't33', title: 'Approve AC replacement quote', priority: 'high', owner: 'mohamed', by: 'laila', due: '2026-10-16', status: 'awaiting', desc: '', subtasks: [], files: [], comments: [], log: [] },
-    { id: 't34', title: 'Approve exam hall booking', priority: 'medium', owner: 'omar', by: 'laila', due: '2026-10-22', status: 'awaiting', desc: '', subtasks: [], files: [], comments: [], log: [] },
-    { id: 't35', title: 'Fix network outage in Building B', priority: 'high', owner: 'mostafa', by: 'laila', due: '2026-10-19', status: 'completed', completedOn: '2026-10-19', desc: '', subtasks: [], files: [], comments: [], log: [] },
-    { id: 't36', title: 'Distribute lecture schedules', priority: 'medium', owner: 'sara', by: 'laila', due: '2026-10-18', status: 'completed', completedOn: '2026-10-18', desc: '', subtasks: [], files: [], comments: [], log: [] }
+    { id: 't15', title: 'Prepare agenda for coordination meeting', priority: 'medium', owner: 'ahmed', by: 'manager', due: '2026-10-20', status: 'completed', completedOn: '2026-10-20', desc: '', subtasks: [], files: [], comments: [], log: [] }
   ],
 
   // kind: meeting | inspection | discussion | review   (drives the colour)
@@ -186,11 +149,8 @@ window.DEMO_DATA = {
   // status: in-progress | awaiting | approved | completed | rejected
   requests: [
     { id: 'SR-1045', title: 'AC Maintenance – Room 203', cat: 'maintenance', location: 'Main Building', by: 'ahmed', date: '2026-10-18', status: 'in-progress' },
-    { id: 'SR-1044', title: 'Lighting Repair – Corridor', cat: 'electrical', location: 'Building B, 2nd floor', by: 'omar', date: '2026-10-17', status: 'awaiting' },
-    { id: 'SR-1043', title: 'Projector for Meeting Room', cat: 'equipment', location: 'Room 105', by: 'ahmed', date: '2026-10-16', status: 'completed' },
-    { id: 'SR-1042', title: 'New Office Chair Request', cat: 'furniture', location: 'Office 112', by: 'hana', date: '2026-10-15', status: 'approved' },
-    { id: 'SR-1041', title: 'Water Leak – Lab 2 Restroom', cat: 'maintenance', location: 'Labs Building', by: 'nourhan', date: '2026-10-14', status: 'completed' },
-    { id: 'SR-1040', title: 'Network Port – Office 112', cat: 'it', location: 'Office 112', by: 'yasmin', date: '2026-10-13', status: 'in-progress' }
+    { id: 'SR-1044', title: 'Lighting Repair – Corridor', cat: 'electrical', location: 'Building B, 2nd floor', by: 'ahmed', date: '2026-10-17', status: 'awaiting' },
+    { id: 'SR-1043', title: 'Projector for Meeting Room', cat: 'equipment', location: 'Room 105', by: 'ahmed', date: '2026-10-16', status: 'completed' }
   ],
 
   emails: [
@@ -200,8 +160,8 @@ window.DEMO_DATA = {
   ],
 
   notifications: [
-    { id: 'n1', icon: 'message-square', text: 'Sara Mohamed commented on “Prepare department report”', at: '10:15 AM', unread: true, task: 't1' },
-    { id: 'n2', icon: 'hourglass', text: 'SR-1044 Lighting Repair is waiting for your approval', at: '09:20 AM', unread: true, view: 'approvals' },
+    { id: 'n1', icon: 'message-square', text: 'The department manager commented on “Prepare department report”', at: '10:15 AM', unread: true, task: 't1' },
+    { id: 'n2', icon: 'hourglass', text: 'SR-1044 Lighting Repair is waiting for approval', at: '09:20 AM', unread: true, view: 'approvals' },
     { id: 'n3', icon: 'square-parking', text: 'Parking space P12 assigned on arrival', at: '08:45 AM', unread: false, view: 'campus' }
   ],
 
@@ -223,13 +183,14 @@ window.DEMO_DATA = {
       { area: 'Library', people: 57, capacity: 120 },
       { area: 'Admin Offices', people: 21, capacity: 40 }
     ],
+    // who: a staff id, or null with a label for anyone not shown by name
     accessLog: [
       { time: '08:42', who: 'ahmed', method: 'Plate CA 1234', point: 'Main Gate', result: 'granted' },
-      { time: '08:39', who: 'sara', method: 'RFID card', point: 'Pedestrian Gate', result: 'granted' },
-      { time: '08:35', who: null, method: 'Plate SN 4821', point: 'Main Gate', result: 'denied' },
-      { time: '08:31', who: 'mohamed', method: 'Plate GZ 7710', point: 'Main Gate', result: 'granted' },
-      { time: '08:24', who: 'tarek', method: 'RFID card', point: 'Building Entrance', result: 'granted' },
-      { time: '08:12', who: 'mostafa', method: 'Plate CA 5502', point: 'Main Gate', result: 'granted' }
+      { time: '08:39', who: null, label: 'Staff card', method: 'RFID card', point: 'Pedestrian Gate', result: 'granted' },
+      { time: '08:35', who: null, label: 'Unknown vehicle', method: 'Plate SN 4821', point: 'Main Gate', result: 'denied' },
+      { time: '08:31', who: null, label: 'Staff vehicle', method: 'Plate GZ 7710', point: 'Main Gate', result: 'granted' },
+      { time: '08:24', who: null, label: 'Staff card', method: 'RFID card', point: 'Building Entrance', result: 'granted' },
+      { time: '08:12', who: null, label: 'Staff vehicle', method: 'Plate CA 5502', point: 'Main Gate', result: 'granted' }
     ],
     devices: [
       { name: 'ESP32', role: 'Main Controller', detail: 'Wi-Fi + IoT · −58 dBm', icon: 'cpu', online: 1, total: 1 },

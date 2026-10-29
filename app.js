@@ -8,7 +8,7 @@
   const D = window.DEMO_DATA;
   const TODAY = D.today;
   let ME = D.me; // whoever is signed in
-  const STORE_KEY = 'asu-foe-smart-staff:data:v1';
+  const STORE_KEY = 'asu-foe-smart-staff:data:v2'; // v2: sample staff removed
   const THEME_KEY = 'asu-foe-smart-staff:theme';
   const ACCOUNTS_KEY = 'asu-foe-smart-staff:accounts:v1';
   const SESSION_KEY = 'asu-foe-smart-staff:session';
@@ -59,7 +59,9 @@
   const HUES = [212, 330, 24, 280, 152, 188, 12, 95, 262, 45, 200, 350];
   const STAFF = {};
   D.staff.forEach((s, i) => { STAFF[s.id] = Object.assign({ hue: HUES[i % HUES.length] }, s); });
-  const DEPARTMENTS = Array.from(new Set(D.staff.map((s) => s.dept)));
+  // The department manager assigns work but is not a named person in the team list.
+  STAFF.manager = { id: 'manager', name: 'Department Manager', role: 'Manager', dept: '', hue: 200 };
+  const DEPARTMENTS = D.departments;
   function addStaff(s) {
     if (STAFF[s.id]) return;
     const hue = Array.from(s.id).reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 7);
@@ -77,7 +79,7 @@
   /* ------------------------------------------------------------------ state */
 
   function freshState() {
-    return { tasks: clone(D.tasks), requests: clone(D.requests), events: clone(D.events), notifications: clone(D.notifications), decisions: [], seq: 1 };
+    return { tasks: clone(D.tasks), requests: clone(D.requests), events: clone(D.events), notifications: clone(D.notifications), decisions: [], seq: 1, seeded: false };
   }
   function loadState() {
     try {
@@ -451,7 +453,7 @@
 
     return `
     <div class="stack">
-      <div class="band"><h1>Manager Team Dashboard<span>· ${esc(person('laila').dept)}</span></h1><span class="tag">Demo data</span></div>
+      <div class="band"><h1>Manager Team Dashboard<span>· everyone with an account</span></h1><span class="tag">Demo data</span></div>
       <div class="kpis">
         ${kpi({ icon: 'users', tone: 'ip', n: D.staff.length, label: `Total Staff · ${onSite} on campus` })}
         ${kpi({ icon: 'hourglass', tone: 'warn', n: pendingApprovals().length, label: 'Pending Approvals', action: 'go', data: ' data-view="approvals"' })}
@@ -1224,7 +1226,7 @@
       case 'request-approval':
         if (!t) break;
         setTaskStatus(t, 'awaiting', 'Requested approval');
-        toast(`Approval requested from ${person(t.by === ME ? 'laila' : t.by).name}`);
+        toast(`Approval requested from ${person(t.by === ME ? 'manager' : t.by).name}`);
         commit();
         break;
       case 'toggle-sub': {
@@ -1280,6 +1282,7 @@
         if (!ui.confirmReset) { ui.confirmReset = true; render(); break; }
         state = freshState();
         accounts.forEach(seedOnboarding); // registered staff keep their onboarding checklist
+        state.seeded = true;
         save();
         ui.confirmReset = false;
         ui.selected = firstOpenTaskId();
@@ -1648,23 +1651,23 @@
 
   // New staff start with a short onboarding checklist from their department head.
   function seedOnboarding(a) {
-    const log = [{ by: 'laila', at: nowLabel(), text: `Assigned to ${a.name}` }];
+    const log = [{ by: 'manager', at: nowLabel(), text: `Assigned to ${a.name}` }];
     const list = [
       { title: 'Collect your RFID staff card', priority: 'high', due: addDays(TODAY, 1), status: 'not-started',
-        desc: 'Visit IT Services (Mostafa Ibrahim) to register your staff card on the RC522 gate and building readers.',
+        desc: 'Visit IT Services to register your staff card on the RC522 gate and building readers.',
         subtasks: ['Bring your national ID', 'Card registered on the gate readers', 'Test the building entrance'] },
       a.plate
         ? { title: 'Register your vehicle plate for gate access', priority: 'medium', due: TODAY, status: 'completed', completedOn: TODAY,
           desc: `Plate ${a.plate} was added when you signed up. The ESP32-CAM at the main gate will recognise it.`, subtasks: [] }
         : { title: 'Register your vehicle plate for gate access', priority: 'medium', due: addDays(TODAY, 2), status: 'not-started',
-          desc: 'Send your plate number to Campus Security (Tarek Nabil) so the entrance camera can open the gate for you. Skip this if you arrive on foot.', subtasks: [] },
+          desc: 'Send your plate number to Campus Security so the entrance camera can open the gate for you. Skip this if you arrive on foot.', subtasks: [] },
       { title: 'Read the department handbook', priority: 'low', due: addDays(TODAY, 4), status: 'not-started',
         desc: 'Working hours, service requests and how approvals work in the Smart Staff system.',
         subtasks: ['Working hours and leave', 'Raising a service request', 'Task approval workflow'] }
     ];
     const ids = list.map((t) => {
       const id = newId('t');
-      state.tasks.push(Object.assign({ id, owner: a.id, by: 'laila', files: [], comments: [], log: clone(log) }, t, { subtasks: t.subtasks.map((s) => ({ t: s, done: false })) }));
+      state.tasks.push(Object.assign({ id, owner: a.id, by: 'manager', files: [], comments: [], log: clone(log) }, t, { subtasks: t.subtasks.map((s) => ({ t: s, done: false })) }));
       return id;
     });
     state.events.push({ id: newId('e'), date: TODAY, start: '13:00', end: '13:30', title: `Welcome meeting · ${a.name}`, place: 'Dean\'s Office', kind: 'meeting' });
@@ -2110,6 +2113,13 @@
     const mq = window.matchMedia('(prefers-color-scheme: dark)');
     if (mq.addEventListener) mq.addEventListener('change', () => { if (inApp()) { renderChrome(); paintIcons(); } });
     window.matchMedia('(min-width: 1360px)').addEventListener('change', () => { if (inApp()) { ui.drawer = false; render(); } });
+
+    // A fresh store (first visit, or the data format changed): give registered staff their onboarding again.
+    if (state.seeded !== true) {
+      accounts.forEach(seedOnboarding);
+      state.seeded = true;
+      save();
+    }
 
     const user = loadSession();
     if (user) {
