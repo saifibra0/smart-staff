@@ -7,8 +7,8 @@
 
   const D = window.DEMO_DATA;
   const TODAY = D.today;
-  let ME = D.me; // whoever is signed in
-  const STORE_KEY = 'asu-foe-smart-staff:data:v2'; // v2: sample staff removed
+  let ME = null; // whoever is signed in
+  const STORE_KEY = 'asu-foe-smart-staff:data:v3'; // v3: no demo account or sample staff
   const THEME_KEY = 'asu-foe-smart-staff:theme';
   const ACCOUNTS_KEY = 'asu-foe-smart-staff:accounts:v1';
   const SESSION_KEY = 'asu-foe-smart-staff:session';
@@ -856,7 +856,7 @@
       <section class="card">
         <div class="pref-row"><div class="who-row">${avatar(ME, 'av-lg')}<div><b>${esc(me.name)}</b><small>${esc(me.role)} · ${esc(me.dept)}</small></div></div>
           ${plate ? `<span class="pill ip">${icon('car')}${esc(plate)} · P${D.campus.mySlot}</span>` : `<span class="pill ns">${icon('credit-card')}RFID card access</span>`}</div>
-        <div class="pref-row"><div><b>Email</b><small>${acct ? esc(acct.email) : `${esc(D.auth.demoEmail)} · demo account`}</small></div>${acct ? `<span class="pill ns">Staff ID ${esc(acct.staffId)}</span>` : ''}</div>
+        <div class="pref-row"><div><b>Email</b><small>${acct ? esc(acct.email) : ''}</small></div>${acct ? `<span class="pill ns">Staff ID ${esc(acct.staffId)}</span>` : ''}</div>
         ${isManager()
           ? `<div class="pref-row"><div><b>Role · Manager</b><small>You can see every user's statistics and activity. Users never see each other's data.</small></div>${onPlatform ? `<button class="btn btn-soft" data-action="go" data-view="users">${icon('chart-pie')}Open Users</button>` : ''}</div>`
           : `<div class="pref-row"><div><b>Role · Staff</b><small>You see only your own tasks, requests and report. Other users cannot see yours.${cloud.db ? ' The manager can see your statistics and activity.' : ''}</small></div><span class="pill ns">${icon('shield-check')}Private</span></div>`}
@@ -1306,7 +1306,6 @@
         paintIcons();
         break;
       }
-      case 'demo-login': signIn(D.me, null, 'Signed in with the demo account'); toast(`Signed in as ${person(D.me).name} (demo account)`); break;
       case 'sign-out': signOut(); break;
       case 'act-filter': ui.actFilter = el.dataset.filter; render(); break;
       case 'user-activity': ui.actPerson = id || null; ui.actFilter = 'all'; go('activity'); break;
@@ -1497,13 +1496,13 @@
   const accountToStaff = (a) => ({ id: a.id, name: a.name, role: a.role, dept: a.dept, onSite: true });
   accounts.forEach((a) => addStaff(accountToStaff(a)));
   const currentAccount = () => accounts.find((a) => a.id === ME);
-  const myPlate = () => (ME === D.me ? D.campus.plate : ((currentAccount() || {}).plate || ''));
-  const emailTaken = (email) => email === D.auth.demoEmail || accounts.some((a) => a.email === email);
+  const myPlate = () => (currentAccount() || {}).plate || '';
+  const emailTaken = (email) => accounts.some((a) => a.email === email);
 
   function loadSession() {
     try {
       const s = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');
-      if (s && (s.userId === D.me || accounts.some((a) => a.id === s.userId))) return s.userId;
+      if (s && accounts.some((a) => a.id === s.userId)) return s.userId;
     } catch (e) { /* not signed in */ }
     return null;
   }
@@ -1543,8 +1542,6 @@
         ${pwField('si-pw', 'password', 'Password', 'current-password')}
         <button class="btn btn-primary btn-block">${icon('log-in')}Sign in</button>
       </form>
-      <div class="divider">or</div>
-      <button class="btn btn-ghost btn-block" data-action="demo-login">${avatar(D.me, 'av-sm')}Continue with the demo account</button>
       <p class="auth-switch">New staff member? <button class="link" data-action="auth-tab" data-tab="register">Create an account</button></p>`;
   }
 
@@ -1680,7 +1677,7 @@
     cloud.signedIn = true;
     cloud.account = accountSummary();
     cloud.lastPage = 'my-day';
-    track(id === D.me ? 'signin' : (how && how.startsWith('Created') ? 'account' : 'signin'), how || 'Signed in');
+    track(how && how.startsWith('Created') ? 'account' : 'signin', how || 'Signed in');
     Object.assign(ui, { view: 'my-day', drawer: false, taskScope: 'mine', taskFilter: 'all', search: '', confirmReset: false });
     ui.selected = selectId || firstOpenTaskId();
     mountApp();
@@ -1692,7 +1689,7 @@
     clearSession();
     closeModal();
     closeSheet();
-    ME = D.me;
+    ME = null;
     Object.assign(ui, { view: 'my-day', drawer: false, search: '', authTab: 'signin' });
     mountAuth();
   }
@@ -1737,7 +1734,7 @@
     if (!showErrors(f, errors, ids)) return;
     const acct = accounts.find((a) => a.email === email);
     if (!acct) {
-      showErrors(f, { email: email === D.auth.demoEmail ? 'This is the demo account. Use “Continue with the demo account” below.' : 'No account uses this email. Create an account first.' }, ids);
+      showErrors(f, { email: 'No account uses this email. Create an account first.' }, ids);
       return;
     }
     let hash;
@@ -1769,13 +1766,12 @@
    * Roles. A dashboard account whose email is in D.auth.managerEmails is the
    * manager; everyone else is staff. Dashboard accounts live in each browser,
    * so on the published page the manager must also be the page owner: only
-   * the owner's Claude account can read other staff's data. The zip / local
-   * copy has no owner, so there the demo account is a manager too.
+   * the owner's Claude account can read other staff's data.
    */
   const onPlatform = !!(window.claude && typeof window.claude.use === 'function');
   const HOST_NOTE = ' Other users cannot see your data. The manager of this page can see your statistics and activity.';
   const managerEmail = () => { const a = currentAccount(); return !!a && D.auth.managerEmails.includes(a.email); };
-  function isManager() { return onPlatform ? cloud.host && managerEmail() : ME === D.me || managerEmail(); }
+  function isManager() { return managerEmail() && (!onPlatform || cloud.host); }
   const managerOnly = () => `<div class="stack"><section class="card empty">${icon('lock')}<b>Managers only</b><span>This page shows other people's work, so only the manager can open it. Your own tasks, requests and report are in the menu.</span></section></div>`;
 
   // The signed-in user's own numbers, sent with their activity for the manager's statistics.
@@ -1797,7 +1793,6 @@
   }
 
   function accountSummary() {
-    if (ME === D.me) return { kind: 'demo', name: person(D.me).name };
     const a = currentAccount();
     return a ? { kind: 'registered', name: a.name, email: a.email, staffId: a.staffId, dept: a.dept, role: a.role } : null;
   }
