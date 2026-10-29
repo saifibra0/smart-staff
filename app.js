@@ -6,13 +6,16 @@
   'use strict';
 
   const D = window.DEMO_DATA;
-  const TODAY = D.today;
+  // Today on this device, as YYYY-MM-DD in local time.
+  const TODAY = (() => {
+    const n = new Date();
+    return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
+  })();
   let ME = null; // whoever is signed in
-  const STORE_KEY = 'asu-foe-smart-staff:data:v3'; // v3: no demo account or sample staff
+  const STORE_KEY = 'asu-foe-smart-staff:data:v4'; // v4: real dates instead of a pinned demo day
   const THEME_KEY = 'asu-foe-smart-staff:theme';
   const ACCOUNTS_KEY = 'asu-foe-smart-staff:accounts:v1';
   const SESSION_KEY = 'asu-foe-smart-staff:session';
-  const LOADED_AT = Date.now();
 
   /* ------------------------------------------------------------------ helpers */
 
@@ -32,7 +35,8 @@
   const isoOf = (dt) => dt.toISOString().slice(0, 10);
   const addDays = (s, n) => { const d = toDate(s); d.setUTCDate(d.getUTCDate() + n); return isoOf(d); };
   const daysBetween = (a, b) => Math.round((toDate(b) - toDate(a)) / 864e5);
-  const mondayOf = (s) => addDays(s, -((toDate(s).getUTCDay() + 6) % 7));
+  // The faculty week runs Saturday to Friday.
+  const weekStartOf = (s) => addDays(s, -((toDate(s).getUTCDay() + 1) % 7));
   const dowOf = (s) => toDate(s).getUTCDay();
   const fmtDate = (s) => { const d = toDate(s); return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`; };
   const fmtShort = (s) => { const d = toDate(s); return `${DOW[d.getUTCDay()]}, ${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`; };
@@ -41,8 +45,7 @@
   const pad = (n) => String(n).padStart(2, '0');
   const fmtClock = (min) => { const h = Math.floor(min / 60); return `${pad(((h + 11) % 12) + 1)}:${pad(min % 60)} ${h < 12 ? 'AM' : 'PM'}`; };
   const fmt24 = (min) => `${pad(Math.floor(min / 60))}:${pad(min % 60)}`;
-  // The demo clock starts at 09:30 on the pinned day, then moves with real time.
-  const nowMin = () => Math.min(D.nowMinutes + Math.floor((Date.now() - LOADED_AT) / 60000), 23 * 60 + 59);
+  const nowMin = () => { const n = new Date(); return n.getHours() * 60 + n.getMinutes(); };
   const nowLabel = () => fmtClock(nowMin());
   const greeting = () => { const m = nowMin(); return m < 12 * 60 ? 'Good Morning' : m < 17 * 60 ? 'Good Afternoon' : 'Good Evening'; };
   function relDue(s) {
@@ -175,7 +178,15 @@
     if (!t.subtasks.length) return 0;
     return Math.round((100 * t.subtasks.filter((s) => s.done).length) / t.subtasks.length);
   }
-  const eventsOn = (day) => state.events.filter((e) => e.date === day).sort((a, b) => a.start.localeCompare(b.start));
+  // A day's events: the weekly timetable's classes for that weekday plus any one-off events.
+  function eventsOn(day) {
+    const dow = dowOf(day);
+    const classes = (D.weeklySchedule || []).filter((c) => c.day === dow).map((c, i) => ({
+      id: `w${dow}-${i}-${day}`, date: day, start: c.start, end: c.end, title: c.title, place: c.code, kind: c.kind, weekly: true
+    }));
+    return classes.concat(state.events.filter((e) => e.date === day)).sort((a, b) => a.start.localeCompare(b.start));
+  }
+  const breakOn = (day) => (D.breakDays || []).find((b) => b.day === dowOf(day));
   // Staff see only their own requests, and no approval requests meant for the manager.
   const myRequests = () => (isManager() ? state.requests : state.requests.filter((r) => r.by === ME));
   const myNotes = () => (isManager() ? state.notifications : state.notifications.filter((n) => n.view !== 'approvals'));
@@ -329,16 +340,21 @@
       </section>`;
   }
 
+  // Colour and icon for a schedule entry: the course group for classes, blue for meetings.
+  const EVENT_TONE = { upl: 'teal', arc: 'violet', grad: 'aw' };
+  const eventIcon = (e) => (e.weekly ? 'graduation-cap' : e.online ? 'video' : 'users');
+
   function nextMeeting(e, cls) {
+    const brk = breakOn(TODAY);
     if (!e) {
-      return `<section class="card next-meet ${cls}"><span class="nm-ico">${icon('calendar-check')}</span><div><div class="eyebrow">Next Meeting</div><div class="nm-title">No more meetings today</div></div></section>`;
+      return `<section class="card next-meet ${cls}"><span class="nm-ico">${icon('calendar-check')}</span><div><div class="eyebrow">Up Next</div><div class="nm-title">${brk ? esc(brk.label) : 'Nothing else scheduled today'}</div></div></section>`;
     }
-    return `<section class="card next-meet ${cls}"><span class="nm-ico">${icon('calendar-clock')}</span><div><div class="eyebrow">Next Meeting</div><div class="nm-time">${fmtClock(toMin(e.start))} – ${fmtClock(toMin(e.end))}</div><div class="nm-title">${esc(e.title)}</div><small>${icon(e.online ? 'video' : 'map-pin')}${esc(e.place)}</small></div></section>`;
+    return `<section class="card next-meet ${cls}"><span class="nm-ico">${icon(e.weekly ? 'graduation-cap' : 'calendar-clock')}</span><div><div class="eyebrow">Up Next</div><div class="nm-time">${fmtClock(toMin(e.start))} – ${fmtClock(toMin(e.end))}</div><div class="nm-title">${esc(e.title)}</div><small>${icon(e.weekly ? 'book-open' : e.online ? 'video' : 'map-pin')}${esc(e.place)}</small></div></section>`;
   }
 
   function meetingRow(e) {
     const past = toMin(e.end) <= nowMin();
-    return `<div class="li${past ? ' is-past' : ''}"><span class="li-time">${fmtClock(toMin(e.start))}<small>${fmtClock(toMin(e.end))}</small></span><span class="li-ico tone-ip">${icon(e.online ? 'video' : 'users')}</span><span class="li-main"><b>${esc(e.title)}</b><small>${esc(e.place)}</small></span><span></span></div>`;
+    return `<div class="li${past ? ' is-past' : ''}"><span class="li-time">${fmtClock(toMin(e.start))}<small>${fmtClock(toMin(e.end))}</small></span><span class="li-ico tone-${EVENT_TONE[e.kind] || 'ip'}">${icon(eventIcon(e))}</span><span class="li-main"><b>${esc(e.title)}</b><small>${esc(e.place)}</small></span><span></span></div>`;
   }
 
   function requestRow(r, withActions) {
@@ -380,8 +396,8 @@
         </section>
         <div class="grid-2">
           <section class="card">
-            <div class="card-h"><h2 class="card-title">Upcoming Meetings</h2><button class="link" data-action="go" data-view="calendar">View Calendar</button></div>
-            <div class="list">${today.length ? today.map(meetingRow).join('') : '<div class="empty">No meetings today.</div>'}</div>
+            <div class="card-h"><h2 class="card-title">Today's Schedule</h2><button class="link" data-action="go" data-view="calendar">View Calendar</button></div>
+            <div class="list">${today.length ? today.map(meetingRow).join('') : `<div class="empty">${breakOn(TODAY) ? esc(breakOn(TODAY).label) : 'Nothing scheduled today.'}</div>`}</div>
           </section>
           <section class="card">
             <div class="card-h"><h2 class="card-title">Recent Service Requests</h2><button class="link" data-action="go" data-view="requests">View All</button></div>
@@ -537,11 +553,11 @@
   }
 
   const HOUR_START = 8;
-  const HOUR_END = 18;
+  const HOUR_END = 21; // Graduation Design runs to 9 pm
 
   function setCalDay(day) {
     ui.calDay = day;
-    ui.week = Math.floor(daysBetween(mondayOf(TODAY), mondayOf(day)) / 7);
+    ui.week = Math.floor(daysBetween(weekStartOf(TODAY), weekStartOf(day)) / 7);
     render();
   }
 
@@ -551,23 +567,22 @@
     const m = d.getUTCMonth();
     const first = isoOf(new Date(Date.UTC(y, m, 1)));
     const daysIn = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
-    const lead = (dowOf(first) + 6) % 7;
+    const lead = (dowOf(first) + 1) % 7;
     const weeks = Math.ceil((lead + daysIn) / 7);
-    const start = mondayOf(first);
-    const has = new Set(state.events.map((e) => e.date));
+    const start = weekStartOf(first);
     const cells = [];
     for (let i = 0; i < weeks * 7; i++) {
       const day = addDays(start, i);
       const dd = toDate(day);
-      const cls = [dd.getUTCMonth() !== m ? 'out' : '', has.has(day) ? 'has' : '', day === TODAY ? 'is-today' : '', day === ui.calDay ? 'is-sel' : ''].filter(Boolean).join(' ');
+      const cls = [dd.getUTCMonth() !== m ? 'out' : '', eventsOn(day).length ? 'has' : '', day === TODAY ? 'is-today' : '', day === ui.calDay ? 'is-sel' : ''].filter(Boolean).join(' ');
       cells.push(`<button class="${cls}" data-action="cal-day" data-day="${day}" aria-label="${fmtLong(day)}">${dd.getUTCDate()}</button>`);
     }
     return `<div class="sub-h"><h3 class="mini-h">${MONTHS_LONG[m]} ${y}</h3></div>
-      <div class="month">${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((w) => `<span class="dow">${w}</span>`).join('')}${cells.join('')}</div>`;
+      <div class="month">${['Sat', 'Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri'].map((w) => `<span class="dow">${w}</span>`).join('')}${cells.join('')}</div>`;
   }
 
   function viewCalendar() {
-    const ws = addDays(mondayOf(TODAY), ui.week * 7);
+    const ws = addDays(weekStartOf(TODAY), ui.week * 7);
     const days = Array.from({ length: 7 }, (_, i) => addDays(ws, i));
     const rows = HOUR_END - HOUR_START;
     const hours = [];
@@ -576,30 +591,38 @@
     const b = toDate(days[6]);
     const range = `${a.getUTCDate()} ${MONTHS[a.getUTCMonth()]} – ${b.getUTCDate()} ${MONTHS[b.getUTCMonth()]} ${b.getUTCFullYear()}`;
 
-    const head = days.map((d) => `<div class="wk-head${d === TODAY ? ' is-today' : ''}${d === ui.calDay ? ' is-sel' : ''}"><button data-action="cal-day" data-day="${d}" aria-label="${fmtLong(d)}"><small>${DOW[dowOf(d)]}</small><b>${toDate(d).getUTCDate()}</b></button></div>`).join('');
+    const head = days.map((d) => {
+      const brk = breakOn(d);
+      return `<div class="wk-head${d === TODAY ? ' is-today' : ''}${d === ui.calDay ? ' is-sel' : ''}"><button data-action="cal-day" data-day="${d}" aria-label="${fmtLong(d)}"><small>${DOW[dowOf(d)]}</small><b>${toDate(d).getUTCDate()}</b></button>${brk ? `<em class="wk-note">${esc(brk.label)}</em>` : ''}</div>`;
+    }).join('');
+    const nowAt = nowMin();
     const cols = days.map((d) => {
-      const evs = state.events.filter((e) => e.date === d).map((e) => {
-        const s = toMin(e.start);
-        const en = toMin(e.end);
+      const evs = eventsOn(d).map((e) => {
+        const s = Math.max(toMin(e.start), HOUR_START * 60);
+        const en = Math.min(toMin(e.end), HOUR_END * 60);
         const top = (s - HOUR_START * 60) / 60;
-        const h = (en - s) / 60;
-        return `<button class="ev ${e.kind}" style="top:calc(var(--hour) * ${top} + 2px);height:calc(var(--hour) * ${h} - 4px)" data-action="cal-day" data-day="${d}" title="${esc(e.title)} · ${e.start}–${e.end} · ${esc(e.place)}"><b>${esc(e.title)}</b><small>${e.start} – ${e.end}</small></button>`;
+        const h = Math.max(en - s, 30) / 60;
+        return `<button class="ev ${e.kind}" style="top:calc(var(--hour) * ${top} + 2px);height:calc(var(--hour) * ${h} - 4px)" data-action="cal-day" data-day="${d}" title="${esc(e.title)} · ${e.start}–${e.end} · ${esc(e.place)}"><b>${esc(e.title)}</b><small>${e.start} – ${e.end}${e.weekly ? ` · ${esc(e.place)}` : ''}</small></button>`;
       }).join('');
-      const now = d === TODAY ? `<span class="now-line" style="top:calc(var(--hour) * ${((nowMin() - HOUR_START * 60) / 60).toFixed(3)})" aria-hidden="true"></span>` : '';
+      const showNow = d === TODAY && nowAt >= HOUR_START * 60 && nowAt <= HOUR_END * 60;
+      const now = showNow ? `<span class="now-line" style="top:calc(var(--hour) * ${((nowAt - HOUR_START * 60) / 60).toFixed(3)})" aria-hidden="true"></span>` : '';
       const dow = dowOf(d);
-      return `<div class="wk-day${dow === 5 || dow === 6 ? ' is-weekend' : ''}${d === TODAY ? ' is-today' : ''}" style="height:calc(var(--hour) * ${rows})">${evs}${now}</div>`;
+      return `<div class="wk-day${dow === 5 ? ' is-weekend' : ''}${breakOn(d) ? ' is-break' : ''}${d === TODAY ? ' is-today' : ''}" style="height:calc(var(--hour) * ${rows})">${evs}${now}</div>`;
     }).join('');
 
     const agendaEvents = eventsOn(ui.calDay);
     const agendaTasks = myTasks().filter((t) => isOpen(t) && t.due === ui.calDay);
-    const agenda = agendaEvents.map((e) => `<div class="agenda-item"><span class="t ${e.kind}">${e.start}</span><span>${esc(e.title)}</span></div>`)
+    const dayBreak = breakOn(ui.calDay);
+    const agenda = (dayBreak ? [`<div class="agenda-item"><span class="t break">Off</span><span>${esc(dayBreak.label)}</span></div>`] : [])
+      .concat(agendaEvents.map((e) => `<div class="agenda-item"><span class="t ${e.kind}">${e.start}</span><span>${esc(e.title)}${e.weekly ? ` <small class="muted">${esc(e.place)}</small>` : ''}</span></div>`))
       .concat(agendaTasks.map((t) => `<div class="agenda-item"><span class="t task">Due</span><span>${esc(t.title)}</span></div>`)).join('');
     const unread = D.emails.filter((m) => m.unread).length;
 
     return `
     <div class="stack">
       <div class="page-head">
-        <div><h1>Calendar</h1><p class="sub">Meetings, inspections and deadlines for the department.</p></div>
+        <div><h1>Calendar</h1><p class="sub">Weekly lectures, meetings and deadlines.</p>
+          <div class="legend cal-legend"><span><i style="background:var(--teal)"></i>UPL courses</span><span><i style="background:var(--violet)"></i>ARC courses</span><span><i style="background:var(--aw)"></i>Graduation Design</span><span><i style="background:var(--ip)"></i>Meetings</span></div></div>
         <div class="cal-nav">
           <button class="icon-btn" data-action="week" data-step="-1" aria-label="Previous week">${icon('chevron-left')}</button>
           <b>${range}</b>

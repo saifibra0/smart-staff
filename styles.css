@@ -1077,6 +1077,18 @@ button.kpi:hover { border-color: var(--accent); }
 .person-main small { display: block; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 .band .live { flex: none; }
 .wl-fill i.ok { background: var(--ok); }
+.ev { display: flex; flex-direction: column; justify-content: flex-start; }
+/* weekly timetable: UPL courses teal, ARC courses violet, Graduation Design orange */
+.ev.upl { background: var(--teal-bg); color: var(--teal-ink); border-color: var(--teal); }
+.ev.arc { background: var(--violet-bg); color: var(--violet-ink); border-color: var(--violet); }
+.ev.grad { background: var(--aw-bg); color: var(--aw-ink); border-color: var(--aw); }
+.agenda-item .t.upl { background: var(--teal-bg); color: var(--teal-ink); }
+.agenda-item .t.arc { background: var(--violet-bg); color: var(--violet-ink); }
+.agenda-item .t.grad { background: var(--aw-bg); color: var(--aw-ink); }
+.agenda-item .t.break { background: var(--ns-bg); color: var(--ns-ink); }
+.wk-head .wk-note { display: block; margin-top: 4px; font-style: normal; font-size: 11px; font-weight: 600; color: var(--muted); }
+.wk-day.is-break { background-image: repeating-linear-gradient(135deg, transparent 0 10px, var(--surface-2) 10px 20px), linear-gradient(to bottom, var(--line) 1px, transparent 1px); background-size: auto, 100% var(--hour); }
+.cal-legend { margin-top: 8px; }
 .verify-card {
   display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 14px; align-items: center;
   padding: 14px 16px;

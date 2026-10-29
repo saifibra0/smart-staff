@@ -8,9 +8,21 @@
  * readings to the server). Field names below are the contract app.js expects.
  */
 window.DEMO_DATA = {
-  // The dashboard is pinned to one working day so the example calendar lines up.
-  today: '2026-10-20',
-  nowMinutes: 9 * 60 + 30, // 09:30
+  /*
+   * Weekly timetable, shown on everyone's calendar every week.
+   * day: 0 Sunday, 1 Monday … 6 Saturday · kind: upl | arc | grad (drives the colour)
+   */
+  weeklySchedule: [
+    { day: 6, start: '09:00', end: '12:00', title: 'Equity and Urban Justice', code: 'UPL473', kind: 'upl' },
+    { day: 6, start: '13:30', end: '18:00', title: 'Smart CityLab', code: 'UPL437', kind: 'upl' },
+    { day: 0, start: '13:30', end: '18:00', title: 'Smart Housing Design Studio', code: 'ARC414', kind: 'arc' },
+    { day: 2, start: '12:00', end: '21:00', title: 'Graduation Design', code: 'Studio', kind: 'grad' },
+    { day: 3, start: '08:00', end: '12:00', title: 'Building Information Modeling', code: 'ARC442', kind: 'arc' },
+    { day: 3, start: '13:30', end: '18:00', title: 'Working Design 3', code: 'ARC456', kind: 'arc' },
+    { day: 4, start: '09:00', end: '12:00', title: 'Human Behavior', code: 'UPL271', kind: 'upl' }
+  ],
+  // Days with no lectures, labelled on the calendar.
+  breakDays: [{ day: 1, label: 'Break · no lectures' }],
 
   /*
    * Registration. Accounts are created and checked in the browser; a real
@@ -49,7 +61,7 @@ window.DEMO_DATA = {
   requests: [],
   notifications: [],
 
-  // Department calendar. kind: meeting | inspection | discussion | review   (drives the colour)
+  // One-off department events (examples). kind: meeting | inspection | discussion | review   (drives the colour)
   events: [
     { id: 'e1',  date: '2026-10-19', start: '10:00', end: '11:00', title: 'Weekly Planning', place: 'Room 203', kind: 'meeting' },
     { id: 'e2',  date: '2026-10-19', start: '13:00', end: '14:00', title: 'Exam Committee', place: 'Room 110', kind: 'review' },
