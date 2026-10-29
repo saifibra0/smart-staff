@@ -103,6 +103,8 @@
     try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch (e) { /* changes stay in memory only */ }
   }
   let state = loadState();
+  // Example events (ids e1, e2 …) always follow data.js, so edits there reach everyone; meetings people added stay.
+  state.events = state.events.filter((e) => !/^e\d+$/.test(e.id)).concat(clone(D.events));
   const newId = (prefix) => `${prefix}${Date.now().toString(36)}${(state.seq++).toString(36)}`;
 
   // Sensor readings are simulated and start fresh on every load.

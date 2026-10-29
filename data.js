@@ -73,8 +73,7 @@ window.DEMO_DATA = {
     { id: 'e8',  date: '2026-10-22', start: '09:00', end: '10:00', title: 'Department Meeting', place: 'Room 203', kind: 'meeting' },
     { id: 'e9',  date: '2026-10-22', start: '11:00', end: '12:00', title: 'Lab Inspection', place: 'Lab 2', kind: 'inspection' },
     { id: 'e10', date: '2026-10-22', start: '13:00', end: '14:00', title: 'Team Discussion', place: 'Room 105', kind: 'discussion' },
-    { id: 'e11', date: '2026-10-22', start: '15:00', end: '16:00', title: 'Project Review', place: 'Room 203', kind: 'review' },
-    { id: 'e12', date: '2026-10-25', start: '10:00', end: '11:30', title: 'Quality Audit Preparation', place: 'Quality Unit', kind: 'meeting' }
+    { id: 'e11', date: '2026-10-22', start: '15:00', end: '16:00', title: 'Project Review', place: 'Room 203', kind: 'review' }
   ],
 
   emails: [
