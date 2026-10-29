@@ -104,7 +104,10 @@
   }
   let state = loadState();
   // Example events (ids e1, e2 …) always follow data.js, so edits there reach everyone; meetings people added stay.
-  state.events = state.events.filter((e) => !/^e\d+$/.test(e.id)).concat(clone(D.events));
+  // Welcome meetings from earlier sign-ups are dropped: new accounts no longer get one.
+  state.events = state.events
+    .filter((e) => !/^e\d+$/.test(e.id) && !String(e.title || '').startsWith('Welcome meeting'))
+    .concat(clone(D.events));
   const newId = (prefix) => `${prefix}${Date.now().toString(36)}${(state.seq++).toString(36)}`;
 
   // Sensor readings are simulated and start fresh on every load.
@@ -1788,7 +1791,6 @@
       state.tasks.push(Object.assign({ id, owner: a.id, by: 'manager', files: [], comments: [], log: clone(log) }, t, { subtasks: t.subtasks.map((s) => ({ t: s, done: false })) }));
       return id;
     });
-    state.events.push({ id: newId('e'), date: TODAY, start: '13:00', end: '13:30', title: `Welcome meeting · ${a.name}`, place: 'Dean\'s Office', kind: 'meeting' });
     state.notifications.unshift({ id: newId('n'), icon: 'user-check', text: `Welcome, ${a.name.split(' ')[0]}! Your onboarding tasks are ready.`, at: nowLabel(), unread: true, task: ids[0] });
     return ids[0];
   }

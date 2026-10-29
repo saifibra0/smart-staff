@@ -758,7 +758,6 @@ button.kpi:hover { border-color: var(--accent); }
   background-size: 100% var(--hour);
 }
 .wk-day.is-weekend { background-color: var(--surface-2); }
-.wk-day.is-today { background-color: var(--accent-soft); }
 .ev {
   position: absolute; left: 4px; right: 4px;
   padding: 5px 7px;
