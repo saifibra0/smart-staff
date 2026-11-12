@@ -942,7 +942,7 @@
    * Simulation: the same gate logic runs in this browser, clearly labelled, and never mixes with live data.
    */
   const GATE = Object.assign({ databaseURL: '', offlineAfterMs: 6000 }, D.gate || {});
-  const GSIM = Object.assign({ detectCm: 15, hysteresisCm: 5, confirm: 3, release: 5, openAngle: 90, closedAngle: 0, stepMs: 15, clearHoldMs: 2000 }, GATE.sim || {});
+  const GSIM = Object.assign({ detectMinCm: 5, detectCm: 10, hysteresisCm: 5, confirm: 3, release: 5, openAngle: 90, closedAngle: 0, stepMs: 15, clearHoldMs: 2000 }, GATE.sim || {});
   const GATE_GUIDE = 'https://github.com/saifibra0/smart-staff/blob/main/esp32/README.md';
   const GATE_CMDS = {
     open: { label: 'OPEN GATE', done: 'Gate opening', icon: 'arrow-up-from-line' },
@@ -952,7 +952,7 @@
     estop: { label: 'EMERGENCY STOP', done: 'Emergency stop active', icon: 'octagon-x' },
     reset: { label: 'RELEASE EMERGENCY STOP', done: 'Emergency stop released', icon: 'rotate-ccw' }
   };
-  // Scene geometry (SVG units). 6 px = 1 cm, so the 15 cm threshold is 90 px in front of the sensor.
+  // Scene geometry (SVG units). 6 px = 1 cm, so the 5-10 cm detection zone is 30-60 px in front of the sensor.
   const GS = { px: 6, sensorX: 318, pivotX: 470, pivotY: 170, clearX: 560, carW: 128, away: -220, out: 760, waitCm: 8 };
 
   const gateLive = { db: null, refs: [], state: null, offset: 0, linked: false, error: '', pending: null };
@@ -1114,6 +1114,7 @@
   function simClose(s, why) {
     if (s.estop) return 'emergency stop is on';
     if (s.vehicle) return 'a vehicle is at the gate';
+    if (s.distanceCm !== null && s.distanceCm <= GSIM.detectCm) return 'something is right in front of the sensor';
     if (s.clearSensor && s.laneBusy) return 'a vehicle is in the lane';
     s.target = GSIM.closedAngle;
     s.gate = s.angle === GSIM.closedAngle ? 'closed' : 'closing';
@@ -1173,7 +1174,7 @@
     }
     s.distanceCm = d === null ? null : Math.round(d * 10) / 10;
     [s.vehicle, s.inCnt, s.outCnt] = simDetect(s.vehicle, s.inCnt, s.outCnt,
-      d !== null && d <= GSIM.detectCm, d === null || d > GSIM.detectCm + GSIM.hysteresisCm);
+      d !== null && d >= GSIM.detectMinCm && d <= GSIM.detectCm, d === null || d > GSIM.detectCm + GSIM.hysteresisCm);
     // Optional clearance sensor after the barrier, looking across the lane.
     if (s.clearSensor) {
       const busy = c.phase !== 'away' && c.x < GS.clearX && front() > GS.clearX;

@@ -170,7 +170,8 @@ labelled **SIMULATION MODE**, and nothing is sent to the hardware.
 
 | Situation | What happens |
 | --- | --- |
-| Vehicle within 15 cm for 3 readings in a row (AUTOMATIC) | Barrier opens smoothly, 0° → 90° in about 1.4 s |
+| Vehicle 5–10 cm from the sensor for 3 readings in a row (AUTOMATIC) | Barrier opens smoothly, 0° → 90° in about 1.4 s |
+| Something closer than 5 cm or farther than 10 cm | Does not open the gate (but anything within 10 cm blocks closing) |
 | Vehicle still there | Barrier stays open |
 | One HC-SR04 only (default) | **Never closes by itself.** The manager presses CLOSE GATE, then confirms that the lane is clear |
 | With the clearance sensor | Closes by itself once that sensor has seen the vehicle pass and the lane has been clear for 2 s |
@@ -185,8 +186,8 @@ labelled **SIMULATION MODE**, and nothing is sent to the hardware.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `DETECT_CM` | 15 | Detection distance |
-| `RELEASE_HYSTERESIS_CM` | 5 | A vehicle must move past 20 cm before it counts as gone |
+| `DETECT_MIN_CM` / `DETECT_CM` | 5 / 10 | Detection zone: only something between these distances opens the gate |
+| `RELEASE_HYSTERESIS_CM` | 5 | A vehicle must move past 15 cm before it counts as gone |
 | `DETECT_CONFIRM` / `RELEASE_CONFIRM` | 3 / 5 | Readings in a row, to filter noise |
 | `SERVO_CLOSED_DEG` / `SERVO_OPEN_DEG` | 0 / 90 | Barrier angles. Swap them if your servo is mounted the other way |
 | `SERVO_STEP_MS` | 15 | ms per degree. Bigger is slower and smoother |
@@ -206,7 +207,7 @@ matches.
 Do these with the barrier arm free to move and nothing in its path.
 
 1. **Sensor:** move your hand from 50 cm to 5 cm in front of the HC-SR04. The website's distance follows it.
-2. **Automatic open:** at about 12 cm, Vehicle Detection turns DETECTED and the barrier rises.
+2. **Automatic open:** hold your hand 5–10 cm away. Vehicle Detection turns DETECTED and the barrier rises.
    The light shows yellow while it moves, then green.
 3. **Stays open:** keep your hand there, and the barrier stays up.
 4. **Close refused:** with your hand still there, press CLOSE GATE twice. The page says it was refused.

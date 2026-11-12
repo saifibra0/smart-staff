@@ -59,7 +59,7 @@ window.DEMO_DATA = {
     databaseURL: 'https://smart-staff-2de6a-default-rtdb.europe-west1.firebasedatabase.app',
     offlineAfterMs: 6000, // no status from the ESP32 for this long = ESP32 OFFLINE
     // Simulation only. The real values are in esp32/smart_gate/config.h.
-    sim: { detectCm: 15, hysteresisCm: 5, openAngle: 90, closedAngle: 0, stepMs: 15, clearHoldMs: 2000 }
+    sim: { detectMinCm: 5, detectCm: 10, hysteresisCm: 5, openAngle: 90, closedAngle: 0, stepMs: 15, clearHoldMs: 2000 }
   },
 
   // Offered when staff sign up.

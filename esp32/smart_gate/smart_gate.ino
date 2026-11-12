@@ -6,7 +6,8 @@
  *
  * How it works
  *  - The HC-SR04 is read every 70 ms without blocking (the echo is timed by an interrupt).
- *  - A vehicle closer than DETECT_CM for a few readings in a row counts as detected.
+ *  - A vehicle in the detection zone (DETECT_MIN_CM to DETECT_CM, 5 to 10 cm) for a few readings in a
+ *    row counts as detected. Once detected it stays detected until it moves beyond the zone.
  *  - AUTOMATIC mode: a detected vehicle opens the barrier (servo 0 -> 90 degrees, one degree at a time).
  *  - The barrier only closes by itself if a second "clearance" HC-SR04 after the barrier says the lane
  *    has been clear for CLEAR_HOLD_MS. With one sensor it stays open until someone presses CLOSE GATE.
@@ -54,7 +55,7 @@
 #define OTA_PASSWORD ""   // an older secrets.h without it: Wi-Fi updates stay off
 #endif
 
-static const char *FW_VERSION = "1.3.0";
+static const char *FW_VERSION = "1.4.0";
 
 /* ================================================================ settings: setup page first, then secrets.h */
 
@@ -155,8 +156,10 @@ bool sonarPoll(Sonar &s) {
 
 /* ================================================================ detection with hysteresis */
 
-void detectorUpdate(Detector &d, float cm, float onCm, float offCm) {
-  bool inside = !isnan(cm) && cm <= onCm;
+// Detected after a few readings in [minCm, onCm]; released only after a few readings beyond offCm (or nothing
+// in range). Readings closer than minCm do not trigger, but they do keep an existing detection.
+void detectorUpdate(Detector &d, float cm, float minCm, float onCm, float offCm) {
+  bool inside = !isnan(cm) && cm >= minCm && cm <= onCm;
   bool gone = isnan(cm) || cm > offCm;
   if (inside) {
     d.outCount = 0;
@@ -228,6 +231,9 @@ static void setNote(const char *msg) {
   Serial.printf("[gate] %s\n", gate.note);
 }
 
+// Anything within the detection distance, even closer than the zone, blocks closing.
+static bool somethingClose() { return !isnan(entrance.cm) && entrance.cm <= DETECT_CM; }
+
 static bool laneBlocked() {
 #if CLEAR_SENSOR_ENABLED
   return laneBusy.on || clearance.fault;
@@ -251,6 +257,7 @@ bool startClosing(const char *why, const char **err) {
   if (gate.estop) { *err = "emergency stop is on"; return false; }
   if (entrance.fault) { *err = "entrance sensor is not answering"; return false; }
   if (vehicle.on) { *err = "a vehicle is at the gate"; return false; }
+  if (somethingClose()) { *err = "something is right in front of the sensor"; return false; }
 #if CLEAR_SENSOR_ENABLED
   if (clearance.fault) { *err = "clearance sensor is not answering"; return false; }
   if (laneBusy.on) { *err = "a vehicle is in the lane"; return false; }
@@ -282,7 +289,7 @@ void gateUpdate(uint32_t nowMs) {
   lastUpdateMs = nowMs;
   if (!gate.estop) {
     // Safety first: a closing barrier goes back up if anything is detected.
-    if (gate.state == G_CLOSING && (vehicle.on || entrance.fault || laneBlocked())) {
+    if (gate.state == G_CLOSING && (vehicle.on || somethingClose() || entrance.fault || laneBlocked())) {
       startOpening("Reopened: vehicle detected while closing");
     }
     // Automatic mode: a vehicle at the entrance opens the gate.
@@ -549,7 +556,7 @@ static String stateJson(const Snapshot &s) {
   j += ",\"gate\":\"" + String(STATE_NAMES[s.state]) + "\"";
   j += ",\"angle\":" + String(s.angle);
   j += ",\"openAngle\":" + String(SERVO_OPEN_DEG) + ",\"closedAngle\":" + String(SERVO_CLOSED_DEG);
-  j += ",\"stepMs\":" + String(SERVO_STEP_MS) + ",\"detectCm\":" + String(DETECT_CM, 1);
+  j += ",\"stepMs\":" + String(SERVO_STEP_MS) + ",\"detectCm\":" + String(DETECT_CM, 1) + ",\"detectMinCm\":" + String(DETECT_MIN_CM, 1);
   j += ",\"mode\":\"" + String(s.mode == M_AUTO ? "auto" : "manual") + "\"";
   j += ",\"estop\":" + String(s.estop ? "true" : "false");
   j += ",\"clearSensor\":" + String(CLEAR_SENSOR_ENABLED ? "true" : "false");
@@ -1030,7 +1037,7 @@ void loop() {
     sonarPing(entrance);
 #endif
   }
-  if (sonarPoll(entrance)) detectorUpdate(vehicle, entrance.fault ? NAN : entrance.cm, DETECT_CM, DETECT_CM + RELEASE_HYSTERESIS_CM);
+  if (sonarPoll(entrance)) detectorUpdate(vehicle, entrance.fault ? NAN : entrance.cm, DETECT_MIN_CM, DETECT_CM, DETECT_CM + RELEASE_HYSTERESIS_CM);
 
   // Distance in the Serial Monitor (at most twice a second, only when it changes), for checking the wiring.
   static uint32_t lastPrintMs = 0;
@@ -1044,7 +1051,7 @@ void loop() {
     else Serial.printf("[sensor] %.1f cm%s\n", entrance.cm, vehicle.on ? "  (vehicle detected)" : "");
   }
 #if CLEAR_SENSOR_ENABLED
-  if (sonarPoll(clearance)) detectorUpdate(laneBusy, clearance.fault ? NAN : clearance.cm, CLEAR_DETECT_CM, CLEAR_DETECT_CM + RELEASE_HYSTERESIS_CM);
+  if (sonarPoll(clearance)) detectorUpdate(laneBusy, clearance.fault ? NAN : clearance.cm, 0, CLEAR_DETECT_CM, CLEAR_DETECT_CM + RELEASE_HYSTERESIS_CM);
 #endif
 
   // 2. Local emergency stop button.

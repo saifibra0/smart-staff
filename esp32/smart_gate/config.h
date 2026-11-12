@@ -20,7 +20,8 @@
 #define PIN_ESTOP_BUTTON  25
 
 // ---------------------------------------------------------------- vehicle detection
-#define DETECT_CM             15.0f  // a vehicle closer than this is "detected"
+#define DETECT_MIN_CM          5.0f  // detection zone: a vehicle between DETECT_MIN_CM and DETECT_CM
+#define DETECT_CM             10.0f  //   opens the gate (closer than 5 cm or farther than 10 cm does not)
 #define RELEASE_HYSTERESIS_CM  5.0f  // it must move past DETECT_CM + this to count as gone
 #define DETECT_CONFIRM            3  // readings in a row needed to say "detected" (filters noise)
 #define RELEASE_CONFIRM           5  // readings in a row needed to say "gone"
