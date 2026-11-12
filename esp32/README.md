@@ -90,24 +90,54 @@ Use the Firebase console for the project **smart-staff-2de6a**: https://console.
    tested with 3.3.12). No other libraries are needed.
 2. Open `esp32/smart_gate/smart_gate.ino`. The other files in that folder open as tabs.
 3. Copy `secrets.example.h` to **`secrets.h`** in the same folder and fill in:
-   your Wi-Fi name and password (2.4 GHz), the database URL, and the ESP32 account's email and password.
+   your Wi-Fi name and password (2.4 GHz), the database URL, the ESP32 account's email and password,
+   and an **update password** (`OTA_PASSWORD`, 8+ characters) for uploads over Wi-Fi later.
    `secrets.h` is in `.gitignore`, so it never goes to GitHub.
-4. *Tools → Board → esp32 → ESP32 Dev Module*. *Tools → Port*: the COM port that appears when the ESP32
-   is plugged in. If none appears, install the USB driver for your board's chip (CP210x or CH340).
+4. *Tools → Board → esp32 → ESP32 Dev Module*. Keep *Tools → Partition Scheme* on the default
+   (*Default 4MB with spiffs*): Wi-Fi uploads need it. *Tools → Port*: the COM port that appears when the
+   ESP32 is plugged in. If none appears, install the USB driver for your board's chip (CP210x or CH340).
 5. Click **Upload**. If it stops at `Connecting....`, hold the board's **BOOT** button until it starts.
+   **The first upload must be by USB cable.** After that you can upload over Wi-Fi (section 5).
 6. Open *Tools → Serial Monitor* at **115200** baud. You should see:
 
    ```
-   Smart Parking entrance gate, firmware 1.0.0
+   Smart Parking entrance gate, firmware 1.1.0
    [gate] Gate closed
    [wifi] connected, IP 192.168.1.23, signal -58 dBm
+   [ota] Wi-Fi updates on: network port "smart-gate" (only while the gate is closed)
+   [web] status page: http://smart-gate.local  or  http://192.168.1.23
    [firebase] signed in as gate-esp32@smart-staff.iot (uid ...)
    ```
 
-The on-board LED blinks slowly while connecting, stays on when it is online, and blinks fast during an
-emergency stop.
+The on-board LED blinks slowly while connecting, stays on when it is online, blinks fast during an
+emergency stop, and flickers very fast while new firmware arrives over Wi-Fi.
 
-## 5. Connect it to the website
+## 5. Laptop and ESP32 on the same Wi-Fi
+
+**No router?** Use the laptop's hotspot: Windows *Settings → Network & internet → Mobile hotspot*.
+Under *Edit* (or *Properties*), set **Network band: 2.4 GHz**. Note the hotspot's name and password, put
+them in `secrets.h` as `WIFI_SSID` / `WIFI_PASSWORD`, and switch the hotspot on. The ESP32 then joins
+the laptop and reaches Firebase through the laptop's internet.
+
+**Status page.** On the laptop, open **http://smart-gate.local** (or the IP address from the Serial
+Monitor). It shows the gate, angle, mode, distance, emergency stop, Wi-Fi signal and whether the website
+link is online, straight from the ESP32, refreshing every second. It works without internet, which helps
+when checking the wiring. It is **view only**: nothing on the local network can open the gate. Control
+stays with the manager account on the website.
+
+**Uploading over Wi-Fi** (after the first USB upload, with `OTA_PASSWORD` set):
+
+- **Arduino IDE:** *Tools → Port* lists a network port **smart-gate at 192.168.x.x**. Pick it, click
+  Upload, and type the update password when asked.
+- **Script:** in PowerShell, in the `esp32` folder, run `.\upload-wifi.ps1`
+  (or `.\upload-wifi.ps1 192.168.x.x` if `smart-gate.local` isn't found). It compiles and uploads, reading
+  the password from `secrets.h`.
+- The first time, Windows Firewall may ask about **espota**. Allow it, or the upload can't finish.
+- For safety, the ESP32 only accepts an update while the **gate is closed**, nothing is in front of the
+  sensor, and the emergency stop is off. During the update the barrier stays down. The website shows
+  ESP32 OFFLINE for about 20–30 seconds while it restarts.
+
+## 6. Connect it to the website
 
 Once `data.js` has the database URL and the ESP32 prints `signed in`, open the site's **Entrance Gate**
 page. The badge changes to **LIVE · ESP32** and the status, distance and barrier update in real time.
@@ -117,7 +147,7 @@ Only the manager account can press the buttons. Everyone else sees the gate in v
 ESP32 is offline, *Start simulation* runs the same gate logic in the browser. The page is then clearly
 labelled **SIMULATION MODE**, and nothing is sent to the hardware.
 
-## 6. How the gate behaves
+## 7. How the gate behaves
 
 | Situation | What happens |
 | --- | --- |
@@ -132,7 +162,7 @@ labelled **SIMULATION MODE**, and nothing is sent to the hardware.
 | MANUAL mode | No automatic opening. Only the website buttons move the barrier |
 | Wi-Fi lost | The gate keeps working locally. The ESP32 reconnects by itself |
 
-## 7. Settings (`config.h`)
+## 8. Settings (`config.h`)
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
@@ -146,11 +176,13 @@ labelled **SIMULATION MODE**, and nothing is sent to the hardware.
 | `CLEAR_DETECT_CM` / `CLEAR_HOLD_MS` | 20 / 2000 | Clearance sensor range and how long the lane must stay clear |
 | `ESTOP_BUTTON_ENABLED` | 0 | 1 when the stop button is wired |
 | `CMD_POLL_MS` / `HEARTBEAT_MS` | 400 / 2000 | How often it checks for commands, and its minimum reporting rate |
+| `DEVICE_HOSTNAME` | smart-gate | Name on the local network (`smart-gate.local`) |
+| `STATUS_PAGE_ENABLED` / `OTA_ENABLED` | 1 / 1 | Local status page, and uploads over Wi-Fi |
 
 If you change the detection distance or angles, also change `gate.sim` in `data.js` so the simulation
 matches.
 
-## 8. Testing checklist
+## 9. Testing checklist
 
 Do these with the barrier arm free to move and nothing in its path.
 
@@ -165,7 +197,7 @@ Do these with the barrier arm free to move and nothing in its path.
 8. **Emergency stop:** press OPEN, then EMERGENCY STOP halfway. The barrier freezes. Release it.
 9. **Offline:** unplug the ESP32. Within 6 s the page shows ESP32 OFFLINE. Plug it back in and it returns.
 
-## 9. Troubleshooting
+## 10. Troubleshooting
 
 | Problem | Fix |
 | --- | --- |
@@ -177,6 +209,8 @@ Do these with the barrier arm free to move and nothing in its path.
 | Website buttons say "Not allowed" | You are not signed in as the manager, or the manager email isn't confirmed yet |
 | Distance always "Out of range" | ECHO/TRIG swapped, the sensor has no 5 V, or the divider is wired wrong |
 | ESP32 resets when the servo moves | Servo is on the ESP32's power. Use the external supply and the capacitor, and join the grounds |
+| `smart-gate.local` doesn't open | Use the IP address from the Serial Monitor instead. The laptop and the ESP32 must be on the same Wi-Fi |
+| No network port in Arduino IDE / Wi-Fi upload times out | Close the gate and clear the sensor first (updates are refused otherwise), check `OTA_PASSWORD` was uploaded by USB once, and allow espota in Windows Firewall |
 
 ## Safety
 

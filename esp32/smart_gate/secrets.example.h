@@ -18,3 +18,8 @@
 // Build > Authentication > Users > Add user. Use it only for this ESP32.
 #define DEVICE_EMAIL      "gate-esp32@smart-staff.iot"
 #define DEVICE_PASSWORD   "choose-a-long-random-password"
+
+// Password for firmware uploads over Wi-Fi, at least 8 characters, not used anywhere else.
+// Arduino IDE asks for it when you upload to the network port "smart-gate".
+// Leave it as it is to keep Wi-Fi uploads off.
+#define OTA_PASSWORD      "choose-an-update-password"

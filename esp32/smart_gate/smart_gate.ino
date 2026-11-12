@@ -19,11 +19,20 @@
  *    (enforced by the database rules in firebase/database.rules.json).
  *  - The network runs in its own task on core 0, so a slow connection never freezes the gate logic,
  *    and the gate keeps working on its own if Wi-Fi drops.
+ *
+ * On the same Wi-Fi as your laptop (local network)
+ *  - http://smart-gate.local shows a view-only status page straight from the ESP32 (no internet needed).
+ *  - After the first USB upload, new firmware can be uploaded over Wi-Fi (Arduino IDE network port
+ *    "smart-gate", or esp32/upload-wifi.ps1). It needs OTA_PASSWORD and only runs while the gate is
+ *    closed and nothing is in front of the sensor.
  */
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
+#include <ESPmDNS.h>
+#include <ArduinoOTA.h>
+#include <WebServer.h>
 #include <sys/time.h>
 #include "config.h"
 #include "gate_types.h"
@@ -33,8 +42,11 @@
 #else
 #error "Copy secrets.example.h to secrets.h (same folder) and fill in your Wi-Fi and Firebase details."
 #endif
+#ifndef OTA_PASSWORD
+#define OTA_PASSWORD ""   // an older secrets.h without it: Wi-Fi updates stay off
+#endif
 
-static const char *FW_VERSION = "1.0.0";
+static const char *FW_VERSION = "1.1.0";
 
 /* ================================================================ HC-SR04 (non-blocking) */
 
@@ -264,6 +276,8 @@ static portMUX_TYPE shareMux = portMUX_INITIALIZER_UNLOCKED;
 static Snapshot shared;
 static QueueHandle_t commandQueue;
 static volatile uint8_t netLevel = 0;   // 0 no Wi-Fi, 1 Wi-Fi but no Firebase, 2 online
+static volatile bool otaAllowed = false; // gate closed and idle: safe to accept a Wi-Fi update
+static volatile bool otaActive = false;  // a Wi-Fi update is being written
 
 static void setLastCommand(const char *id, const char *result) {
   portENTER_CRITICAL(&shareMux);
@@ -525,6 +539,7 @@ void netTask(void *) {
   bool timeStarted = false;
   for (;;) {
     uint32_t now = millis();
+    if (otaActive) { vTaskDelay(pdMS_TO_TICKS(200)); continue; }   // a firmware update has the network
     if (WiFi.status() != WL_CONNECTED) {
       netLevel = 0;
       if (!lastWifiTry || now - lastWifiTry > 10000) {
@@ -560,6 +575,109 @@ void netTask(void *) {
   }
 }
 
+/* ================================================================ local network: status page + Wi-Fi updates (core 0) */
+
+static WebServer web(80);
+static bool otaOn = false;
+
+static const char STATUS_PAGE[] PROGMEM = R"HTML(<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Smart gate</title><style>
+:root{color-scheme:light dark;--bg:#f4f7fb;--card:#fff;--fg:#0f172a;--mut:#64748b;--line:#dfe6ef;--ok:#11744a;--bad:#bb2329;--warn:#8a5e00}
+@media(prefers-color-scheme:dark){:root{--bg:#0a1420;--card:#101d2e;--fg:#e5edf7;--mut:#8b9bb0;--line:#22364f;--ok:#6fd9a5;--bad:#ff9195;--warn:#f6cd6a}}
+body{margin:0;font:15px system-ui,"Segoe UI",sans-serif;background:var(--bg);color:var(--fg)}
+main{max-width:520px;margin:0 auto;padding:16px}h1{font-size:20px;margin:4px 0 2px}p{color:var(--mut);margin:0 0 14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:0 16px}
+.row{display:flex;justify-content:space-between;gap:12px;padding:11px 0;border-top:1px solid var(--line)}.row:first-child{border-top:0}
+.row span{color:var(--mut)}.ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}
+small{display:block;margin-top:12px;color:var(--mut);line-height:1.5}
+</style></head><body><main><h1>Smart Parking gate</h1><p>Straight from the ESP32 &middot; view only</p>
+<div class="card" id="c"></div><small id="m">Connecting&hellip;</small></main><script>
+const R=[["Gate",s=>[s.gate.toUpperCase(),s.gate=="open"?"ok":s.gate=="closed"?"bad":"warn"]],
+["Servo angle",s=>[s.angle+"°"]],["Mode",s=>[s.mode=="manual"?"MANUAL":"AUTOMATIC"]],
+["Vehicle",s=>[s.vehicle?"DETECTED":"NOT DETECTED",s.vehicle?"warn":""]],
+["Distance",s=>s.sensorOk?[s.distanceCm==null?"Out of range":s.distanceCm.toFixed(1)+" cm"]:["Sensor fault","bad"]],
+["Emergency stop",s=>[s.estop?"ACTIVE":"Off",s.estop?"bad":""]],
+["Clearance sensor",s=>[!s.clearSensor?"Not installed":s.laneBusy?"Vehicle in lane":"Clear"]],
+["Website link",s=>[["Offline","Wi-Fi only","Online"][s.net],["bad","warn","ok"][s.net]]],
+["Wi-Fi updates",s=>s.ota=="ready"?["Ready","ok"]:s.ota=="busy"?["Only while the gate is closed","warn"]:["Off: set OTA_PASSWORD"]]];
+async function tick(){try{const s=await(await fetch("/status.json",{cache:"no-store"})).json();const c=document.getElementById("c");c.textContent="";
+for(const[l,f]of R){const[v,k]=f(s),r=document.createElement("div"),a=document.createElement("span"),b=document.createElement("b");
+r.className="row";a.textContent=l;b.textContent=v;if(k)b.className=k;r.append(a,b);c.append(r);}
+document.getElementById("m").textContent=(s.note?s.note+" · ":"")+"Firmware "+s.fw+" · "+s.ip+" · Wi-Fi "+s.rssi+" dBm · up "+Math.floor(s.uptimeS/60)+" min";}
+catch(e){document.getElementById("m").textContent="Lost contact with the ESP32. Is it on the same Wi-Fi?";}}
+tick();setInterval(tick,1000);</script></body></html>)HTML";
+
+static bool otaPasswordOk() {
+  return strlen(OTA_PASSWORD) >= 8 && strcmp(OTA_PASSWORD, "choose-an-update-password") != 0;
+}
+
+static const char *otaState() {
+  if (!OTA_ENABLED || !otaOn) return "off";
+  return otaAllowed ? "ready" : "busy";
+}
+
+static void handleStatus() {
+  Snapshot s;
+  portENTER_CRITICAL(&shareMux);
+  s = shared;
+  portEXIT_CRITICAL(&shareMux);
+  String j = stateJson(s) + ",\"rssi\":" + String(WiFi.RSSI()) + ",\"uptimeS\":" + String(millis() / 1000) +
+             ",\"ip\":\"" + WiFi.localIP().toString() + "\",\"net\":" + String(netLevel) +
+             ",\"ota\":\"" + otaState() + "\"}";
+  web.sendHeader("Cache-Control", "no-store");
+  web.send(200, "application/json", j);
+}
+
+static void startLocalServices() {
+  bool mdnsUp = false;
+#if OTA_ENABLED
+  if (otaPasswordOk()) {
+    ArduinoOTA.setHostname(DEVICE_HOSTNAME);
+    ArduinoOTA.setPassword(OTA_PASSWORD);
+    ArduinoOTA.onStart([]() { otaActive = true; Serial.println("[ota] update started; the barrier stays down until the restart"); });
+    ArduinoOTA.onProgress([](unsigned int done, unsigned int total) {
+      static int lastTen = -1;
+      int pct = total ? (int)((uint64_t)done * 100 / total) : 0;
+      if (pct / 10 != lastTen) { lastTen = pct / 10; Serial.printf("[ota] %d%%\n", pct); }
+    });
+    ArduinoOTA.onEnd([]() { Serial.println("[ota] finished, restarting"); });
+    ArduinoOTA.onError([](ota_error_t e) { Serial.printf("[ota] update failed (error %u)\n", (unsigned)e); otaActive = false; });
+    ArduinoOTA.begin();   // also announces the board on the network as DEVICE_HOSTNAME.local
+    otaOn = mdnsUp = true;
+    Serial.printf("[ota] Wi-Fi updates on: network port \"%s\" (only while the gate is closed)\n", DEVICE_HOSTNAME);
+  } else {
+    Serial.println("[ota] Wi-Fi updates off: set OTA_PASSWORD (8+ characters) in secrets.h");
+  }
+#endif
+  if (!mdnsUp) mdnsUp = MDNS.begin(DEVICE_HOSTNAME);
+#if STATUS_PAGE_ENABLED
+  web.on("/", HTTP_GET, []() { web.send(200, "text/html", STATUS_PAGE); });
+  web.on("/status.json", HTTP_GET, handleStatus);
+  web.onNotFound([]() { web.send(404, "text/plain", "Not found"); });
+  web.begin();
+  if (mdnsUp) MDNS.addService("http", "tcp", 80);
+  Serial.printf("[web] status page: http://%s.local  or  http://%s\n", DEVICE_HOSTNAME, WiFi.localIP().toString().c_str());
+#endif
+}
+
+// Serves the status page and listens for Wi-Fi updates. It is separate from the Firebase task, so a
+// slow HTTPS call never makes the page or an update hang.
+void localTask(void *) {
+  bool started = false;
+  for (;;) {
+    if (WiFi.status() == WL_CONNECTED) {
+      if (!started) { started = true; startLocalServices(); }
+#if OTA_ENABLED
+      if (otaOn && (otaAllowed || otaActive)) ArduinoOTA.handle();
+#endif
+#if STATUS_PAGE_ENABLED
+      web.handleClient();
+#endif
+    }
+    vTaskDelay(pdMS_TO_TICKS(5));
+  }
+}
+
 /* ================================================================ setup + main loop (core 1) */
 
 void setup() {
@@ -586,12 +704,18 @@ void setup() {
   WiFi.setSleep(false);          // faster replies to the website
   WiFi.setAutoReconnect(true);
   xTaskCreatePinnedToCore(netTask, "net", 12288, nullptr, 1, nullptr, 0);
+#if OTA_ENABLED || STATUS_PAGE_ENABLED
+  xTaskCreatePinnedToCore(localTask, "local", 8192, nullptr, 1, nullptr, 0);
+#endif
 }
 
 void loop() {
   static uint32_t lastPingMs = 0;
   static bool pingClear = false;
   uint32_t now = millis();
+
+  // While new firmware is written over Wi-Fi the barrier stays down (updates only start when it is closed).
+  if (otaActive) { digitalWrite(PIN_STATUS_LED, (now / 50) % 2); delay(5); return; }
 
   // 1. Sensors: one ping at a time; with two sensors they take turns so they never hear each other.
   bool busy = entrance.waiting;
@@ -627,6 +751,7 @@ void loop() {
   // 4. Gate logic and servo movement.
   gateUpdate(now);
   publishSnapshot();
+  otaAllowed = gate.state == G_CLOSED && gate.angle == gate.target && !gate.estop && !vehicle.on && !entrance.fault;
 
   // 5. Status LED: steady = online, slow blink = connecting, fast blink = emergency stop.
   bool led = gate.estop ? (now / 100) % 2 : netLevel == 2 ? true : (now / 500) % 2;

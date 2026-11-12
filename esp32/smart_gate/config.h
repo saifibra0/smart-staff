@@ -46,3 +46,8 @@
 #define HEARTBEAT_MS           2000  // status update at least this often, so the website knows it is online
 #define CMD_MAX_AGE_MS        15000  // ignore website commands older than this (e.g. sent while offline)
 #define HTTP_TIMEOUT_MS        5000
+
+// ---------------------------------------------------------------- local network (same Wi-Fi as your laptop)
+#define DEVICE_HOSTNAME     "smart-gate"  // the board answers as smart-gate.local
+#define STATUS_PAGE_ENABLED 1             // view-only status page at http://smart-gate.local
+#define OTA_ENABLED         1             // firmware uploads over Wi-Fi (also needs OTA_PASSWORD in secrets.h)
