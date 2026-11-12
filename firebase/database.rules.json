@@ -5,7 +5,7 @@
     "gate": {
       ".read": "auth != null",
       "state": {
-        ".write": "auth != null && auth.uid === 'PASTE_THE_ESP32_ACCOUNT_UID_HERE'"
+        ".write": "auth != null && auth.uid === 'TY0SvK45rtYXu6wbP5Qz46EJtRm2'"
       },
       "command": {
         ".write": "auth != null && auth.token.email === '23p0317@eng.asu.edu.eg' && auth.token.email_verified === true",

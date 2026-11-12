@@ -65,6 +65,8 @@ not be opened to the internet. Both sides talk to Firebase instead, over HTTPS:
 
 ## 3. Firebase setup (once, about 10 minutes)
 
+**Already done for this project on 12 Nov 2026:** the database exists in Belgium (europe-west1), `data.js` has its URL, the ESP32 account `gate-esp32@smart-staff.iot` exists, and the rules are published. Skip to section 4.
+
 Use the Firebase console for the project **smart-staff-2de6a**: https://console.firebase.google.com
 
 1. **Create the Realtime Database.** Build → Realtime Database → *Create database*. Pick a location
@@ -74,9 +76,10 @@ Use the Firebase console for the project **smart-staff-2de6a**: https://console.
 3. **Create the ESP32's account.** Build → Authentication → Users → *Add user*. Use an email that is only
    for the gate (for example `gate-esp32@smart-staff.iot`) and a long random password. Copy the new
    user's **User UID**.
-4. **Publish the rules.** Realtime Database → *Rules*. Paste the contents of `firebase/database.rules.json`,
-   replace `PASTE_THE_ESP32_ACCOUNT_UID_HERE` with the UID from step 3, then click *Publish*.
-   These rules only cover the Realtime Database. Your Firestore rules stay as they are.
+4. **Publish the rules.** Realtime Database → *Rules*. Paste the contents of `firebase/database.rules.json`
+   and click *Publish*. The file already holds the UID of `gate-esp32@smart-staff.iot`; if you create a
+   different ESP32 account, put its UID there instead. These rules only cover the Realtime Database.
+   Your Firestore rules stay as they are.
 5. **Manager email.** Commands are accepted only from `23p0317@eng.asu.edu.eg`, and only once that email is
    confirmed, which the site already asks for. To change the manager, edit the email in the rules and in
    `data.js` (`auth.managerEmails`).

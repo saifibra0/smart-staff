@@ -1479,9 +1479,9 @@
               <tr><td>Servo power · GND</td><td>External 5–6 V supply · common GND</td></tr>
             </tbody></table>
             ${mgr && m.src !== 'live' ? `<ol class="gsteps">
-              <li>Firebase console › Realtime Database › Create database. Copy its URL into <code>gate.databaseURL</code> in <code>data.js</code>.</li>
-              <li>Authentication › Users › Add user for the ESP32, then paste its UID into <code>firebase/database.rules.json</code> and publish the rules.</li>
-              <li>Fill in <code>secrets.h</code> and upload <code>esp32/smart_gate</code> with Arduino IDE.</li>
+              <li>Wire the ESP32 as shown above.</li>
+              <li>In <code>esp32/smart_gate/secrets.h</code>, fill in your Wi-Fi and the ESP32 account's password.</li>
+              <li>Upload <code>esp32/smart_gate</code> with Arduino IDE (board: ESP32 Dev Module). This page turns LIVE when the ESP32 reports.</li>
             </ol>` : ''}
             <p class="note">Prototype only. A full-size motorised gate needs certified safety equipment (photocells, safety edges, force limiting).</p>
           </div>
