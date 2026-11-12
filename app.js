@@ -828,6 +828,17 @@
   const sensorCm = (n, occ) => (occ ? 32 + ((n * 37) % 41) : 178 + ((n * 53) % 37));
   const zoneOf = (n) => { let start = 1; for (const z of D.campus.parkingZones) { if (n < start + z.slots) return z; start += z.slots; } return D.campus.parkingZones[0]; };
 
+  // The gate tile shows the real ESP32 gate when it is online, otherwise the campus demo gate; both open the gate page.
+  function gateKpi() {
+    gateConnect();
+    const toGate = { action: 'go', data: ' data-view="gate"' };
+    if (gateOnline()) {
+      const g = String(gateLive.state.gate || 'closed');
+      return kpi(Object.assign({ icon: 'door-open', tone: g === 'open' ? 'ok' : g === 'closed' ? 'nav' : 'aw', n: g[0].toUpperCase() + g.slice(1), label: 'Entrance gate · ESP32 live' }, toGate));
+    }
+    return kpi(Object.assign({ icon: 'door-open', tone: campus.gate.open ? 'ok' : 'nav', n: campus.gate.open ? 'Open' : 'Closed', label: `${campus.gate.name} · last opened ${campus.gate.last}` }, toGate));
+  }
+
   function viewCampus() {
     const occ = campus.occupied.size;
     const pct = Math.round((100 * occ) / TOTAL_SLOTS);
@@ -864,7 +875,7 @@
       </div>
       <div class="kpis">
         ${kpi({ icon: 'square-parking', tone: 'ip', n: `${pct}%`, label: `Parking · ${occ} of ${TOTAL_SLOTS} spaces taken` })}
-        ${kpi({ icon: 'door-open', tone: campus.gate.open ? 'ok' : 'nav', n: campus.gate.open ? 'Open' : 'Closed', label: `${campus.gate.name} · last opened ${campus.gate.last}` })}
+        ${gateKpi()}
         ${kpi({ icon: 'activity', tone: 'teal', n: people, label: 'People in buildings · PIR' })}
         ${kpi({ icon: 'thermometer', tone: 'violet', n: `${campus.env.temp.toFixed(1)}°C`, label: `${campus.env.room} · ${campus.env.humidity}% humidity` })}
       </div>
@@ -923,8 +934,589 @@
     </div>`;
   }
 
+  /* ------------------------------------------------------------------ automatic entrance gate (ESP32 + HC-SR04 + servo)
+   *
+   * Live data: the ESP32 writes its status to /gate/state in the Firebase Realtime Database and reads
+   * commands from /gate/command (firmware and setup guide in esp32/). The database rules let only the
+   * ESP32's own account write the status and only the verified manager send commands.
+   * Simulation: the same gate logic runs in this browser, clearly labelled, and never mixes with live data.
+   */
+  const GATE = Object.assign({ databaseURL: '', offlineAfterMs: 6000 }, D.gate || {});
+  const GSIM = Object.assign({ detectCm: 15, hysteresisCm: 5, confirm: 3, release: 5, openAngle: 90, closedAngle: 0, stepMs: 15, clearHoldMs: 2000 }, GATE.sim || {});
+  const GATE_GUIDE = 'https://github.com/saifibra0/smart-staff/blob/main/esp32/README.md';
+  const GATE_CMDS = {
+    open: { label: 'OPEN GATE', done: 'Gate opening', icon: 'arrow-up-from-line' },
+    close: { label: 'CLOSE GATE', done: 'Gate closing', icon: 'arrow-down-to-line' },
+    auto: { label: 'ENABLE AUTOMATIC MODE', done: 'Automatic mode on', icon: 'zap' },
+    manual: { label: 'ENABLE MANUAL MODE', done: 'Manual mode on', icon: 'hand' },
+    estop: { label: 'EMERGENCY STOP', done: 'Emergency stop active', icon: 'octagon-x' },
+    reset: { label: 'RELEASE EMERGENCY STOP', done: 'Emergency stop released', icon: 'rotate-ccw' }
+  };
+  // Scene geometry (SVG units). 6 px = 1 cm, so the 15 cm threshold is 90 px in front of the sensor.
+  const GS = { px: 6, sensorX: 318, pivotX: 470, pivotY: 170, clearX: 560, carW: 128, away: -220, out: 760, waitCm: 8 };
+
+  const gateLive = { db: null, refs: [], state: null, offset: 0, linked: false, error: '', pending: null };
+  const gateSim = { on: false, timer: null, s: null };
+  const gateUi = { log: [], prev: {}, sig: '', src: '', confirmClose: 0, feedback: null, timer: null, car: 'away', carAt: 0 };
+
+  const gateConfigured = () => !!(FB && GATE.databaseURL && window.firebase && window.firebase.database);
+  const gateServerNow = () => Date.now() + gateLive.offset;
+  const gateOnline = () => !!(gateLive.state && typeof gateLive.state.updatedAt === 'number' &&
+    gateServerNow() - gateLive.state.updatedAt < GATE.offlineAfterMs);
+  function gateSource() {
+    if (gateSim.on) return 'sim';
+    if (gateOnline()) return 'live';
+    return gateConfigured() ? 'offline' : 'setup';
+  }
+  // The values on screen come from exactly one place: the ESP32, or the simulator.
+  const gateData = (src) => (src === 'sim' ? simReport() : src === 'live' ? gateLive.state : null);
+  const gateCanControl = (src) => src === 'sim' || (src === 'live' && isManager());
+  const clockNow = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+  function gateConnect() {
+    if (!gateUi.timer) gateUi.timer = setInterval(gateTick, 1000);
+    if (gateLive.db || !gateConfigured() || !fbUser()) return;
+    try {
+      const db = window.firebase.app().database(GATE.databaseURL);
+      gateLive.db = db;
+      const watch = (path, fn, onErr) => { const r = db.ref(path); r.on('value', fn, onErr); gateLive.refs.push(r); };
+      watch('.info/serverTimeOffset', (s) => { gateLive.offset = Number(s.val()) || 0; });
+      watch('.info/connected', (s) => { gateLive.linked = !!s.val(); gatePaint(); });
+      watch('gate/state', (s) => gateOnState(s.val()), (e) => {
+        gateLive.error = e && /permission/i.test(String(e.code || e.message))
+          ? 'The database rules do not let this account read the gate. Check firebase/database.rules.json.'
+          : 'The live gate feed stopped. Reload the page to reconnect.';
+        gatePaint();
+      });
+    } catch (e) {
+      gateLive.db = null;
+      gateLive.error = 'Could not open the Realtime Database. Check gate.databaseURL in data.js.';
+    }
+  }
+
+  function gateDisconnect() {
+    gateLive.refs.forEach((r) => { try { r.off(); } catch (e) { /* already off */ } });
+    Object.assign(gateLive, { db: null, refs: [], state: null, linked: false, error: '', pending: null });
+    simStop();
+    gateUi.log = [];
+    gateUi.prev = {};
+  }
+
+  function gateOnState(v) {
+    gateLive.state = v && typeof v === 'object' ? v : null;
+    gateLive.error = '';
+    if (gateSim.on && gateOnline()) {
+      simStop();
+      toast('The ESP32 is online. Simulation stopped; showing live data.');
+    }
+    const p = gateLive.pending;
+    if (p && gateLive.state && gateLive.state.lastCmd === p.id) {
+      gateLive.pending = null;
+      gateFeedback(String(gateLive.state.lastCmdResult || 'ok'), p.action);
+    }
+    if (gateOnline()) gateRecord('live', gateLive.state);
+    gatePaint();
+  }
+
+  function gateFeedback(result, action) {
+    const ok = result.startsWith('ok');
+    gateUi.feedback = { ok, text: ok ? GATE_CMDS[action].done : `Not done. ${result.replace(/^refused: /, 'Refused: ').replace(/^ignored: /, 'Ignored: ')}`, at: Date.now() };
+  }
+
+  // Turns status changes into the event list.
+  function gateRecord(src, s) {
+    if (!s) return;
+    const prev = gateUi.prev[src];
+    gateUi.prev[src] = { gate: s.gate, vehicle: s.vehicle, mode: s.mode, estop: s.estop, sensorOk: s.sensorOk };
+    if (!prev) return;
+    const add = (text, tone) => {
+      gateUi.log.unshift({ at: clockNow(), text, tone, src });
+      gateUi.log.length = Math.min(gateUi.log.length, 12);
+    };
+    if (s.estop !== prev.estop) add(s.estop ? 'EMERGENCY STOP' : 'Emergency stop released', s.estop ? 'bad' : 'ok');
+    if (s.sensorOk !== prev.sensorOk) add(s.sensorOk === false ? 'HC-SR04 not answering' : 'HC-SR04 answering again', s.sensorOk === false ? 'bad' : 'ok');
+    if (s.vehicle !== prev.vehicle) add(s.vehicle ? `Vehicle detected at ${gateCm(s.distanceCm)}` : 'Vehicle no longer detected', s.vehicle ? 'ip' : 'ns');
+    if (s.gate !== prev.gate) add(`Gate ${s.gate}`, s.gate === 'open' ? 'ok' : s.gate === 'closed' ? 'bad' : 'aw');
+    if (s.mode !== prev.mode) add(`${s.mode === 'manual' ? 'Manual' : 'Automatic'} mode`, 'ip');
+  }
+
+  const gateCm = (v) => (typeof v === 'number' ? `${v.toFixed(1)} cm` : 'out of range');
+
+  function gateSend(action) {
+    const src = gateSource();
+    gateUi.confirmClose = 0;
+    if (src === 'sim') { simCommand(action); gatePaint(); return; }
+    if (src !== 'live') { toast('The ESP32 is offline. Start simulation mode to try the controls.'); return; }
+    if (!isManager()) { toast('Only the manager account can control the gate.'); return; }
+    const id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    gateLive.pending = { id, action, at: Date.now() };
+    gateUi.feedback = null;
+    track('action', `Entrance gate: ${GATE_CMDS[action].label}`);
+    gateLive.db.ref('gate/command').set({ id, action, by: fbUser().uid, at: window.firebase.database.ServerValue.TIMESTAMP })
+      .catch((e) => {
+        gateLive.pending = null;
+        gateUi.feedback = { ok: false, text: /permission/i.test(String(e && (e.code || e.message)))
+          ? 'Not allowed. Only the verified manager account can send gate commands.'
+          : 'The command could not be sent. Check your connection.', at: Date.now() };
+        gatePaint();
+      });
+    gatePaint();
+  }
+
+  function gateTick() {
+    const p = gateLive.pending;
+    if (p && Date.now() - p.at > 6000) {
+      gateLive.pending = null;
+      gateUi.feedback = { ok: false, text: `No reply from the ESP32 to “${GATE_CMDS[p.action].label}” within 6 s.`, at: Date.now() };
+    }
+    if (gateUi.confirmClose && Date.now() - gateUi.confirmClose > 5000) gateUi.confirmClose = 0;
+    if (gateUi.feedback && Date.now() - gateUi.feedback.at > 15000) gateUi.feedback = null;
+    gatePaint();
+  }
+
+  /* ---------- simulation: the firmware's gate logic, run in the browser */
+
+  function simStart() {
+    if (gateOnline()) { toast('The ESP32 is online, so this page shows live data.'); return; }
+    gateSim.s = {
+      angle: GSIM.closedAngle, target: GSIM.closedAngle, gate: 'closed', mode: 'auto', estop: false,
+      vehicle: false, inCnt: 0, outCnt: 0, laneBusy: false, laneIn: 0, laneOut: 0, passSeen: false, clearSince: 0,
+      clearSensor: false, distanceCm: null, clearCm: null, note: 'Simulation started', acc: 0,
+      car: { x: GS.away, phase: 'away' }, hazard: false
+    };
+    gateSim.on = true;
+    gateUi.prev.sim = null;
+    gateUi.feedback = null;
+    gateSim.timer = setInterval(simTick, 50);
+    gateUi.log.unshift({ at: clockNow(), text: 'Simulation started', tone: 'aw', src: 'sim' });
+    render();
+  }
+
+  function simStop() {
+    clearInterval(gateSim.timer);
+    const was = gateSim.on;
+    Object.assign(gateSim, { on: false, timer: null, s: null });
+    gateUi.prev.sim = null;
+    if (was) gateUi.log.unshift({ at: clockNow(), text: 'Simulation stopped', tone: 'ns', src: 'sim' });
+  }
+
+  const simVisual = (s) => (90 * (s.angle - GSIM.closedAngle)) / ((GSIM.openAngle - GSIM.closedAngle) || 1);
+
+  function simOpen(s, why) {
+    if (s.estop) return;
+    s.target = GSIM.openAngle;
+    s.gate = s.angle === GSIM.openAngle ? 'open' : 'opening';
+    s.passSeen = false;
+    s.clearSince = 0;
+    s.note = why;
+  }
+
+  function simClose(s, why) {
+    if (s.estop) return 'emergency stop is on';
+    if (s.vehicle) return 'a vehicle is at the gate';
+    if (s.clearSensor && s.laneBusy) return 'a vehicle is in the lane';
+    s.target = GSIM.closedAngle;
+    s.gate = s.angle === GSIM.closedAngle ? 'closed' : 'closing';
+    s.note = why;
+    return '';
+  }
+
+  function simCommand(action) {
+    const s = gateSim.s;
+    if (!s) return;
+    let result = 'ok';
+    if (action === 'open') { if (s.estop) result = 'refused: emergency stop is on'; else simOpen(s, 'Opened from the website'); }
+    else if (action === 'close') { const err = simClose(s, 'Closing from the website'); if (err) result = `refused: ${err}`; }
+    else if (action === 'auto') { s.mode = 'auto'; s.note = 'Automatic mode'; }
+    else if (action === 'manual') { s.mode = 'manual'; s.note = 'Manual mode'; }
+    else if (action === 'estop') { s.estop = true; s.target = s.angle; s.gate = 'stopped'; s.note = 'Emergency stop from the website'; }
+    else if (action === 'reset') {
+      if (!s.estop) result = 'ok (was not stopped)';
+      else {
+        s.estop = false;
+        s.target = s.angle;
+        s.gate = s.angle === GSIM.openAngle ? 'open' : s.angle === GSIM.closedAngle ? 'closed' : 'stopped';
+        s.note = 'Emergency stop released';
+      }
+    }
+    gateFeedback(result, action);
+  }
+
+  function simDetect(on, inCnt, outCnt, inside, gone) {
+    if (inside) { outCnt = 0; if (!on && ++inCnt >= GSIM.confirm) on = true; }
+    else {
+      inCnt = 0;
+      if (on && gone) { if (++outCnt >= GSIM.release) { on = false; outCnt = 0; } } else outCnt = 0;
+    }
+    return [on, inCnt, outCnt];
+  }
+
+  function simTick() {
+    const s = gateSim.s;
+    if (!s) return;
+    const c = s.car;
+    const armUp = simVisual(s) >= 84;
+    const front = () => c.x + GS.carW;
+    // The test car: drives up, waits 8 cm from the sensor, goes through once the barrier is up.
+    if (c.phase === 'approach') {
+      if (armUp && front() >= GS.sensorX - GS.waitCm * GS.px - 4) c.phase = 'drive';
+      else c.x = Math.min(c.x + 6, GS.sensorX - GS.waitCm * GS.px - GS.carW);
+    } else if (c.phase === 'drive') {
+      c.x += 7;
+      if (c.x > GS.out) { c.phase = 'away'; c.x = GS.away; }
+    }
+    // Entrance HC-SR04: faces the oncoming car; while the car is alongside it reads a few cm.
+    let d = null;
+    if (c.phase !== 'away') {
+      if (front() <= GS.sensorX) { const cm = (GS.sensorX - front()) / GS.px; d = cm <= 400 ? cm : null; }
+      else if (c.x < GS.sensorX) d = 4;
+    }
+    s.distanceCm = d === null ? null : Math.round(d * 10) / 10;
+    [s.vehicle, s.inCnt, s.outCnt] = simDetect(s.vehicle, s.inCnt, s.outCnt,
+      d !== null && d <= GSIM.detectCm, d === null || d > GSIM.detectCm + GSIM.hysteresisCm);
+    // Optional clearance sensor after the barrier, looking across the lane.
+    if (s.clearSensor) {
+      const busy = c.phase !== 'away' && c.x < GS.clearX && front() > GS.clearX;
+      s.clearCm = busy ? 9 : null;
+      [s.laneBusy, s.laneIn, s.laneOut] = simDetect(s.laneBusy, s.laneIn, s.laneOut, busy, !busy);
+    } else { s.clearCm = null; s.laneBusy = false; }
+    // A barrier coming down on the car shows why one sensor is not enough protection.
+    const under = c.phase !== 'away' && front() > GS.sensorX + 18 && c.x < GS.pivotX;
+    s.hazard = under && simVisual(s) < 60;
+
+    // Gate logic, as in the firmware.
+    if (!s.estop) {
+      if (s.gate === 'closing' && (s.vehicle || (s.clearSensor && s.laneBusy))) simOpen(s, 'Reopened: vehicle detected while closing');
+      if (s.mode === 'auto' && s.vehicle && (s.gate === 'closed' || s.gate === 'stopped')) simOpen(s, 'Opened automatically: vehicle detected');
+      if (s.gate === 'open') {
+        if (s.clearSensor && s.mode === 'auto') {
+          if (s.laneBusy) { s.passSeen = true; s.clearSince = 0; }
+          else if (s.passSeen && !s.vehicle) {
+            if (!s.clearSince) s.clearSince = Date.now();
+            else if (Date.now() - s.clearSince >= GSIM.clearHoldMs) simClose(s, 'Closed automatically: lane clear');
+          }
+        } else if (!s.clearSensor) s.note = 'Open. Waiting for manual close (no clearance sensor)';
+      }
+      s.acc += 50;
+      while (s.acc >= GSIM.stepMs && s.angle !== s.target) {
+        s.acc -= GSIM.stepMs;
+        s.angle += s.target > s.angle ? 1 : -1;
+        if (s.angle === s.target) {
+          s.gate = s.target === GSIM.openAngle ? 'open' : 'closed';
+          s.note = s.gate === 'open' ? 'Gate open' : 'Gate closed';
+        }
+      }
+      if (s.angle === s.target) s.acc = 0;
+    }
+    gateRecord('sim', simReport());
+    gatePaint();
+  }
+
+  function simReport() {
+    const s = gateSim.s;
+    if (!s) return null;
+    return {
+      distanceCm: s.distanceCm, sensorOk: true, vehicle: s.vehicle, gate: s.gate, angle: s.angle,
+      openAngle: GSIM.openAngle, closedAngle: GSIM.closedAngle, stepMs: GSIM.stepMs, detectCm: GSIM.detectCm,
+      mode: s.mode, estop: s.estop, clearSensor: s.clearSensor, clearCm: s.clearCm, clearOk: true,
+      laneBusy: s.laneBusy, note: s.hazard ? 'UNSAFE: the barrier is coming down on the car. A clearance sensor would stop this.' : s.note
+    };
+  }
+
+  /* ---------- what the page shows */
+
+  function gateModel() {
+    const src = gateSource();
+    const s = gateData(src);
+    const has = !!s;
+    const st = s || {};
+    const lastSeen = gateLive.state && typeof gateLive.state.updatedAt === 'number' ? gateLive.state.updatedAt : 0;
+    const age = src === 'live' ? Math.max(0, (gateServerNow() - lastSeen) / 1000) : null;
+    const gateWord = has ? String(st.gate || 'closed') : '';
+    const span = (Number(st.openAngle) - Number(st.closedAngle)) || 90;
+    return {
+      src, has, s: st,
+      esp: src === 'live' ? ['ONLINE', 'ok'] : src === 'sim' ? ['SIMULATION', 'aw'] : ['OFFLINE', 'ns'],
+      vehicle: has ? (st.vehicle ? ['DETECTED', 'ip'] : ['NOT DETECTED', 'ns']) : ['—', 'ns'],
+      distance: !has ? '—' : st.sensorOk === false ? 'Sensor fault' : typeof st.distanceCm === 'number' ? `${st.distanceCm.toFixed(1)} cm` : 'Out of range',
+      gate: has ? [gateWord.toUpperCase(), { open: 'ok', closed: 'bad', opening: 'aw', closing: 'aw' }[gateWord] || 'bad'] : ['—', 'ns'],
+      angle: has ? `${st.angle}°` : '—',
+      anglePct: has ? clamp(Math.round((100 * (st.angle - st.closedAngle)) / span), 0, 100) : 0,
+      mode: has ? (st.mode === 'manual' ? ['MANUAL', 'aw'] : ['AUTOMATIC', 'ip']) : ['—', 'ns'],
+      estop: has ? (st.estop ? ['ACTIVE', 'bad'] : ['OFF', 'ns']) : ['—', 'ns'],
+      lane: !has ? ['—', 'ns'] : !st.clearSensor ? ['NOT INSTALLED', 'ns'] : st.clearOk === false ? ['FAULT', 'bad'] : st.laneBusy ? ['VEHICLE IN LANE', 'aw'] : ['CLEAR', 'ok'],
+      note: has ? String(st.note || '') : '',
+      light: !has ? 'off' : st.estop || gateWord === 'stopped' ? 'stop' : gateWord === 'opening' || gateWord === 'closing' ? 'moving' : gateWord === 'open' ? 'open' : 'closed',
+      meta: src === 'live'
+        ? `Updated ${age < 1 ? 'just now' : `${Math.round(age)} s ago`}${typeof st.rssi === 'number' ? ` · Wi-Fi ${st.rssi} dBm` : ''}${st.fw ? ` · firmware ${st.fw}` : ''}`
+        : src === 'sim' ? 'Simulated in this browser · not hardware data'
+          : lastSeen ? `Last heard from the ESP32 at ${new Date(lastSeen).toLocaleTimeString()}` : 'No data from the ESP32 yet',
+      lastSeen
+    };
+  }
+
+  // Barrier angle on screen (0 = down, 90 = up) and how long to animate there.
+  function gateArm(m) {
+    if (!m.has) return { deg: 0, ms: 300 };
+    const s = m.s;
+    const span = (Number(s.openAngle) - Number(s.closedAngle)) || 90;
+    const vis = (a) => clamp((90 * (a - s.closedAngle)) / span, 0, 90);
+    if (m.src === 'sim') return { deg: vis(s.angle), ms: 60 };
+    const step = Number(s.stepMs) || 15;
+    if (s.gate === 'opening') return { deg: 90, ms: Math.abs(s.openAngle - s.angle) * step };
+    if (s.gate === 'closing') return { deg: 0, ms: Math.abs(s.angle - s.closedAngle) * step };
+    return { deg: vis(s.angle), ms: 250 };
+  }
+
+  // Where to draw the car. Simulation: its exact position. Live: estimated from the HC-SR04 reading.
+  function gateCar(m) {
+    if (!m.has) return { x: GS.away, ms: 0 };
+    if (m.src === 'sim') return { x: gateSim.s.car.x, ms: 60 };
+    const s = m.s;
+    const near = typeof s.distanceCm === 'number' && s.distanceCm <= 52;
+    if (near) { gateUi.car = 'near'; return { x: GS.sensorX - s.distanceCm * GS.px - GS.carW, ms: 300 }; }
+    if (gateUi.car === 'near' && (s.vehicle || s.gate === 'open' || s.gate === 'opening')) { gateUi.car = 'through'; gateUi.carAt = Date.now(); }
+    if (gateUi.car === 'through' && Date.now() - gateUi.carAt < 2600) return { x: GS.out, ms: 2400 };
+    gateUi.car = 'away';
+    return { x: GS.away, ms: 0 };
+  }
+
+  function gateScene(m) {
+    const arm = gateArm(m);
+    const car = gateCar(m);
+    const beam = m.has && !(m.s.sensorOk === false);
+    const dist = m.has && typeof m.s.distanceCm === 'number' ? `${m.s.distanceCm.toFixed(1)} cm` : '';
+    const clear = m.has && m.s.clearSensor;
+    return `<svg class="gscene" id="g-scene" viewBox="0 0 720 260" role="img" aria-label="Animated entrance gate: barrier ${esc(m.gate[0].toLowerCase())}, vehicle ${esc(m.vehicle[0].toLowerCase())}">
+      <defs>
+        <pattern id="g-stripes" width="24" height="10" patternUnits="userSpaceOnUse"><rect width="12" height="10" fill="#e5484d"/><rect x="12" width="12" height="10" fill="#ffffff"/></pattern>
+        <linearGradient id="g-beam-fill" x1="1" x2="0"><stop offset="0" stop-color="currentColor" stop-opacity=".45"/><stop offset="1" stop-color="currentColor" stop-opacity="0"/></linearGradient>
+      </defs>
+      <rect class="gs-ground" x="0" y="222" width="720" height="38"/>
+      <line class="gs-lane" x1="0" y1="241" x2="720" y2="241"/>
+      <rect class="gs-zone" x="590" y="222" width="130" height="38"/>
+      <text class="gs-label" x="655" y="255" text-anchor="middle">PARKING</text>
+      <g class="gs-sign"><rect x="676" y="120" width="5" height="102"/><rect class="gs-sign-p" x="660" y="96" width="38" height="38" rx="6"/><text x="679" y="124" text-anchor="middle">P</text></g>
+      <g id="g-beam" class="gs-beam${beam ? '' : ' is-off'}${m.has && m.s.vehicle ? ' is-hit' : ''}">
+        <path d="M318 189 L118 160 L118 224 L318 195 Z" fill="url(#g-beam-fill)"/>
+        <path class="gs-ping" d="M312 180 Q302 192 312 204"/><path class="gs-ping p2" d="M312 180 Q302 192 312 204"/><path class="gs-ping p3" d="M312 180 Q302 192 312 204"/>
+      </g>
+      <text id="g-dist" class="gs-dist" x="306" y="176" text-anchor="end">${esc(dist)}</text>
+      <g class="gs-sensor"><rect x="324" y="196" width="4" height="26"/><rect class="gs-hc" x="316" y="184" width="18" height="14" rx="2"/><circle cx="320" cy="191" r="2.6"/><circle cx="330" cy="191" r="2.6"/></g>
+      <text class="gs-label" x="326" y="236" text-anchor="middle">HC-SR04</text>
+      <g id="g-clear" class="gs-sensor gs-clear${clear ? '' : ' is-hidden'}${clear && m.s.laneBusy ? ' is-hit' : ''}"><rect x="558" y="196" width="4" height="26"/><rect class="gs-hc" x="551" y="184" width="18" height="14" rx="2"/><circle class="gs-led" cx="560" cy="178" r="3.5"/></g>
+      <g class="gs-post"><rect x="462" y="160" width="16" height="62" rx="2"/><rect class="gs-servo" x="456" y="160" width="28" height="22" rx="3"/><rect class="gs-lamp" x="484" y="186" width="20" height="28" rx="4"/></g>
+      <circle id="g-light" class="gs-light gl-${m.light}" cx="494" cy="200" r="7"/>
+      <g id="g-arm" class="gs-arm" style="transform: rotate(${arm.deg}deg)"><rect x="336" y="166" width="140" height="8" rx="3" fill="url(#g-stripes)"/><rect class="gs-arm-edge" x="336" y="166" width="140" height="8" rx="3"/></g>
+      <circle class="gs-pivot" cx="470" cy="170" r="5"/>
+      <g id="g-car" class="gs-car" style="transform: translateX(${car.x}px)">
+        <path class="gs-car-body" d="M6 204 L6 184 Q8 176 20 174 L36 172 L52 152 Q56 148 64 148 L92 148 Q100 148 104 154 L114 172 L122 176 Q128 180 128 190 L128 204 Z"/>
+        <path class="gs-car-glass" d="M58 154 L50 170 L76 170 L76 154 Z M82 154 L82 170 L106 170 L98 156 Q96 154 92 154 Z"/>
+        <rect class="gs-car-lamp" x="122" y="182" width="6" height="6" rx="2"/>
+        <circle class="gs-wheel" cx="32" cy="206" r="13"/><circle class="gs-wheel" cx="102" cy="206" r="13"/>
+        <circle class="gs-hub" cx="32" cy="206" r="5"/><circle class="gs-hub" cx="102" cy="206" r="5"/>
+      </g>
+    </svg>`;
+  }
+
+  // Updates the drawing in place so the barrier and car move smoothly instead of jumping.
+  function paintScene(m) {
+    const scene = $('#g-scene');
+    if (!scene) return;
+    const arm = gateArm(m);
+    const car = gateCar(m);
+    const armEl = $('#g-arm', scene);
+    armEl.style.transition = `transform ${arm.ms}ms linear`;
+    armEl.style.transform = `rotate(${arm.deg}deg)`;
+    const carEl = $('#g-car', scene);
+    carEl.style.transition = car.ms ? `transform ${car.ms}ms linear` : 'none';
+    carEl.style.transform = `translateX(${car.x}px)`;
+    $('#g-light', scene).setAttribute('class', `gs-light gl-${m.light}`);
+    const beam = $('#g-beam', scene);
+    beam.classList.toggle('is-off', !m.has || m.s.sensorOk === false);
+    beam.classList.toggle('is-hit', !!(m.has && m.s.vehicle));
+    $('#g-dist', scene).textContent = m.has && typeof m.s.distanceCm === 'number' ? `${m.s.distanceCm.toFixed(1)} cm` : '';
+    const clear = $('#g-clear', scene);
+    clear.classList.toggle('is-hidden', !(m.has && m.s.clearSensor));
+    clear.classList.toggle('is-hit', !!(m.has && m.s.laneBusy));
+    scene.setAttribute('aria-label', `Animated entrance gate: barrier ${m.gate[0].toLowerCase()}, vehicle ${m.vehicle[0].toLowerCase()}`);
+  }
+
+  const GATE_ROWS = [
+    ['esp', 'ESP32 Status'], ['vehicle', 'Vehicle Detection'], ['distance', 'Ultrasonic Distance'], ['gate', 'Gate Status'],
+    ['angle', 'Servo Angle'], ['mode', 'Operating Mode'], ['estop', 'Emergency Stop'], ['lane', 'Clearance Sensor']
+  ];
+
+  function gateMonitor(m) {
+    const val = (k) => {
+      const v = m[k];
+      if (k === 'angle') return `<span class="gm-angle"><b id="gm-angle">${esc(v)}</b><span class="bar"><i id="gm-angle-bar" style="width:${m.anglePct}%"></i></span></span>`;
+      if (k === 'distance') return `<b id="gm-distance" class="gm-num">${esc(v)}</b>`;
+      return `<span id="gm-${k}" class="pill ${v[1]}">${esc(v[0])}</span>`;
+    };
+    return `<dl class="gmon">${GATE_ROWS.map(([k, label]) => `<div class="gm-row"><dt>${label}</dt><dd>${val(k)}</dd></div>`).join('')}</dl>
+      <p class="gm-note" id="gm-note">${esc(m.note)}</p>`;
+  }
+
+  function paintMonitor(m) {
+    GATE_ROWS.forEach(([k]) => {
+      const el = $(`#gm-${k}`);
+      if (!el) return;
+      if (k === 'angle') { el.textContent = m.angle; $('#gm-angle-bar').style.width = `${m.anglePct}%`; return; }
+      if (k === 'distance') { el.textContent = m.distance; return; }
+      el.textContent = m[k][0];
+      el.className = `pill ${m[k][1]}`;
+    });
+    const note = $('#gm-note');
+    if (note) {
+      note.textContent = m.note;
+      note.classList.toggle('is-bad', /^UNSAFE|refused|fault/i.test(m.note));
+    }
+    const meta = $('#g-meta');
+    if (meta) meta.textContent = m.meta;
+  }
+
+  function gateControls(m) {
+    const can = gateCanControl(m.src);
+    const busy = !!gateLive.pending && m.src === 'live';
+    const st = m.s;
+    const dis = (cond) => (!can || busy || cond ? ' disabled' : '');
+    const btn = (cmd, cls, cond, label) => `<button class="btn gbtn ${cls}" data-action="gate-cmd" data-cmd="${cmd}"${dis(cond)}>${icon(GATE_CMDS[cmd].icon)}<span>${label || GATE_CMDS[cmd].label}</span></button>`;
+    const confirming = gateUi.confirmClose && !st.clearSensor;
+    const closeLabel = confirming ? 'LANE CLEAR? CLICK AGAIN' : 'CLOSE GATE';
+    const p = gateLive.pending;
+    const fb = busy ? { ok: null, text: `Sending “${GATE_CMDS[p.action].label}” to the ESP32…` } : gateUi.feedback;
+    const why = m.src === 'live' && !isManager() ? 'View only: only the manager account can control the gate.'
+      : m.src === 'offline' || m.src === 'setup' ? 'The controls work when the ESP32 is online, or in simulation mode.'
+        : !st.clearSensor && m.has ? 'One sensor only: the gate never closes by itself. Check the lane is clear before closing.' : '';
+    return `<div class="gate-btns">
+        ${btn('open', 'g-open', st.estop || st.gate === 'open' || st.gate === 'opening')}
+        ${btn('close', `g-close${confirming ? ' is-confirm' : ''}`, st.estop || st.gate === 'closed' || st.gate === 'closing', closeLabel)}
+        ${btn('auto', `g-mode${st.mode === 'auto' ? ' is-on' : ''}`, st.mode === 'auto')}
+        ${btn('manual', `g-mode${st.mode === 'manual' ? ' is-on' : ''}`, st.mode === 'manual')}
+        ${st.estop ? btn('reset', 'g-reset', false) : `<button class="btn gbtn g-estop" data-action="gate-cmd" data-cmd="estop"${can ? '' : ' disabled'}>${icon(GATE_CMDS.estop.icon)}<span>${GATE_CMDS.estop.label}</span></button>`}
+      </div>
+      ${fb ? `<p class="gfeed ${fb.ok === null ? 'wait' : fb.ok ? 'ok' : 'bad'}" role="status">${esc(fb.text)}</p>` : ''}
+      ${why ? `<p class="gate-why">${icon(m.src === 'live' && !isManager() ? 'lock' : 'info')}${esc(why)}</p>` : ''}`;
+  }
+
+  function gateBanner(m) {
+    if (m.src === 'sim') {
+      return `<section class="gbanner sim" role="status">${icon('flask-conical')}<div><b>SIMULATION MODE</b><span>Everything on this page is simulated in your browser. It is not live hardware data, and nothing is sent to the ESP32.</span></div>
+        <button class="btn btn-ghost sm" data-action="gate-sim-stop">${icon('square')}Stop simulation</button></section>`;
+    }
+    if (m.src === 'live') return gateLive.error ? `<section class="gbanner warn">${icon('triangle-alert')}<div><b>Live feed problem</b><span>${esc(gateLive.error)}</span></div></section>` : '';
+    const offline = m.src === 'offline';
+    const text = gateLive.error || (offline
+      ? `No status from the gate controller for over ${Math.round(GATE.offlineAfterMs / 1000)} s. Check that the ESP32 has power and Wi-Fi.`
+      : 'The ESP32 is not connected to this site yet. Follow the setup steps below. Until then, try everything in simulation mode.');
+    return `<section class="gbanner off" role="status">${icon(offline ? 'wifi-off' : 'plug')}<div><b>${offline ? 'ESP32 OFFLINE' : 'GATE CONTROLLER NOT CONNECTED'}</b><span>${esc(text)}</span></div>
+      <button class="btn btn-primary sm" data-action="gate-sim-start">${icon('flask-conical')}Start simulation</button></section>`;
+  }
+
+  function gateSimTools(m) {
+    if (m.src !== 'sim') return '';
+    const s = gateSim.s;
+    return `<div class="gsim-tools">
+      <button class="btn btn-soft sm" data-action="gate-sim-car"${s.car.phase !== 'away' ? ' disabled' : ''}>${icon('car-front')}Send a car</button>
+      <button class="btn btn-ghost sm" data-action="gate-sim-clear" aria-pressed="${s.clearSensor}">${icon(s.clearSensor ? 'square-check-big' : 'square')}Clearance sensor ${s.clearSensor ? 'installed' : 'not installed'}</button>
+      <span class="muted">Simulated test controls</span>
+    </div>`;
+  }
+
+  function gateLog() {
+    if (!gateUi.log.length) return '<p class="note gate-empty">Gate events appear here as they happen.</p>';
+    return gateUi.log.map((e) => `<div class="li gl-row"><span class="li-time">${esc(e.at)}</span><span class="gdot tone-${e.tone}"></span><span class="li-main"><b>${esc(e.text)}</b></span><span class="pill ${e.src === 'sim' ? 'aw' : 'ok'}">${e.src === 'sim' ? 'SIM' : 'LIVE'}</span></div>`).join('');
+  }
+
+  function gateBadge(src) {
+    if (src === 'live') return '<span class="live"><i></i>LIVE · ESP32</span>';
+    if (src === 'sim') return '<span class="live gsrc-sim"><i></i>SIMULATION</span>';
+    return '<span class="live paused"><i></i>ESP32 OFFLINE</span>';
+  }
+
+  function viewGate() {
+    gateConnect();
+    const m = gateModel();
+    gateUi.src = m.src;
+    gateUi.sig = gateSig(m);
+    const mgr = isManager();
+    return `
+    <div class="stack gate-page">
+      <div class="band"><h1>Smart Parking — Automatic Entrance Gate<span>· ESP32 · HC-SR04 · servo</span></h1><span id="g-badge">${gateBadge(m.src)}</span></div>
+      <div id="g-banner">${gateBanner(m)}</div>
+      <div class="gate-grid">
+        <section class="card">
+          <div class="card-h"><h2 class="card-title">Entrance</h2><span class="muted">${m.src === 'live' ? 'Car position follows the HC-SR04 reading' : m.src === 'sim' ? 'Simulated vehicle' : 'Waiting for the ESP32'}</span></div>
+          <div class="card-body">${gateScene(m)}
+            <div class="glegend"><span><i class="gl-closed"></i>Closed</span><span><i class="gl-open"></i>Open</span><span><i class="gl-moving"></i>Moving</span><span><i class="gl-off"></i>ESP32 offline</span></div>
+            <div id="g-sim">${gateSimTools(m)}</div>
+          </div>
+        </section>
+        <section class="card">
+          <div class="card-h"><h2 class="card-title">Live Monitoring</h2></div>
+          <div class="card-body">${gateMonitor(m)}<p class="gm-meta" id="g-meta">${esc(m.meta)}</p></div>
+        </section>
+      </div>
+      <section class="card">
+        <div class="card-h"><h2 class="card-title">Gate Control</h2><span class="muted">${m.src === 'sim' ? 'Controls the simulated gate' : 'Commands go to the ESP32 through Firebase'}</span></div>
+        <div class="card-body" id="g-controls">${gateControls(m)}</div>
+      </section>
+      <div class="grid-2">
+        <section class="card">
+          <div class="card-h"><h2 class="card-title">Gate Events</h2><span class="muted">Since this page opened</span></div>
+          <div class="list" id="g-log">${gateLog()}</div>
+        </section>
+        <section class="card">
+          <div class="card-h"><h2 class="card-title">Hardware &amp; Setup</h2><a class="link" href="${GATE_GUIDE}" target="_blank" rel="noopener">Full guide</a></div>
+          <div class="card-body gate-setup">
+            <a class="gwire" href="esp32/wiring.svg" target="_blank" rel="noopener"><img src="esp32/wiring.svg" alt="Wiring: HC-SR04 TRIG to GPIO 26, ECHO through a 1 kΩ / 2 kΩ divider to GPIO 27, servo signal to GPIO 18, servo and sensor on an external 5 V supply, all grounds joined." loading="lazy"></a>
+            <table class="gpins"><tbody>
+              <tr><td>HC-SR04 TRIG</td><td>GPIO 26</td></tr>
+              <tr><td>HC-SR04 ECHO</td><td>GPIO 27 via 1 kΩ / 2 kΩ divider</td></tr>
+              <tr><td>HC-SR04 VCC · GND</td><td>5 V · common GND</td></tr>
+              <tr><td>Servo signal</td><td>GPIO 18</td></tr>
+              <tr><td>Servo power · GND</td><td>External 5–6 V supply · common GND</td></tr>
+            </tbody></table>
+            ${mgr && m.src !== 'live' ? `<ol class="gsteps">
+              <li>Firebase console › Realtime Database › Create database. Copy its URL into <code>gate.databaseURL</code> in <code>data.js</code>.</li>
+              <li>Authentication › Users › Add user for the ESP32, then paste its UID into <code>firebase/database.rules.json</code> and publish the rules.</li>
+              <li>Fill in <code>secrets.h</code> and upload <code>esp32/smart_gate</code> with Arduino IDE.</li>
+            </ol>` : ''}
+            <p class="note">Prototype only. A full-size motorised gate needs certified safety equipment (photocells, safety edges, force limiting).</p>
+          </div>
+        </section>
+      </div>
+    </div>`;
+  }
+
+  const gateSig = (m) => JSON.stringify([m.src, m.s.gate, m.s.mode, m.s.estop, m.s.clearSensor, gateSim.s && gateSim.s.car.phase,
+    gateLive.pending && gateLive.pending.id, gateUi.feedback && gateUi.feedback.at, !!gateUi.confirmClose, isManager(),
+    gateLive.error, gateUi.log.length && gateUi.log[0].at + gateUi.log[0].text]);
+
+  function gatePaint() {
+    if (ui.view !== 'gate' || !inApp() || !$('#g-scene')) return;
+    const m = gateModel();
+    if (m.src !== gateUi.src) { render(); return; }   // a different mode has a different layout
+    paintScene(m);
+    paintMonitor(m);
+    const sig = gateSig(m);
+    if (sig === gateUi.sig) return;
+    gateUi.sig = sig;
+    const focused = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.cmd || document.activeElement.dataset.action : null;
+    $('#g-controls').innerHTML = gateControls(m);
+    $('#g-banner').innerHTML = gateBanner(m);
+    $('#g-sim').innerHTML = gateSimTools(m);
+    $('#g-log').innerHTML = gateLog();
+    paintIcons();
+    if (focused) {
+      const back = $(`#view [data-cmd="${focused}"]`) || $(`#view [data-action="${focused}"]`);
+      if (back && !back.disabled) back.focus();
+    }
+  }
+
   function viewPreferences() {
-    const sw = (key, title, text) => `<div class="pref-row"><div><b>${title}</b><small>${text}</small></div><button class="switch" role="switch" aria-checked="${ui.prefs[key]}" aria-label="${title}" data-action="pref" data-key="${key}"></button></div>`;
+    const sw =(key, title, text) => `<div class="pref-row"><div><b>${title}</b><small>${text}</small></div><button class="switch" role="switch" aria-checked="${ui.prefs[key]}" aria-label="${title}" data-action="pref" data-key="${key}"></button></div>`;
     const me = person(ME);
     const acct = currentAccount();
     const plate = myPlate();
@@ -966,6 +1558,7 @@
     approvals: viewApprovals,
     reports: viewReports,
     campus: viewCampus,
+    gate: viewGate,
     preferences: viewPreferences,
     activity: viewActivity,
     users: viewUsers
@@ -981,7 +1574,8 @@
     { id: 'requests', label: 'Service Requests', icon: 'file-text' },
     { id: 'approvals', label: 'Approvals', icon: 'circle-check-big' },
     { id: 'reports', label: 'Reports', icon: 'chart-column' },
-    { id: 'campus', label: 'Smart Campus', icon: 'radar' }
+    { id: 'campus', label: 'Smart Campus', icon: 'radar' },
+    { id: 'gate', label: 'Entrance Gate', icon: 'door-open' }
   ];
   const BOTTOM = ['my-day', 'tasks', 'calendar'];
   // The host (page owner) also gets the Activity page.
@@ -1378,6 +1972,19 @@
       case 'close-sheet': closeSheet(); break;
       case 'slot': campus.slot = Number(el.dataset.n); render(); break;
       case 'gate': openGate(); break;
+      case 'gate-cmd': {
+        const cmd = el.dataset.cmd;
+        if (!GATE_CMDS[cmd]) break;
+        // With one sensor nobody can see the lane but the operator: closing takes a second click.
+        const m = gateModel();
+        if (cmd === 'close' && m.has && !m.s.clearSensor && !gateUi.confirmClose) { gateUi.confirmClose = Date.now(); gatePaint(); break; }
+        gateSend(cmd);
+        break;
+      }
+      case 'gate-sim-start': simStart(); break;
+      case 'gate-sim-stop': simStop(); render(); break;
+      case 'gate-sim-car': if (gateSim.s && gateSim.s.car.phase === 'away') { gateSim.s.car.phase = 'approach'; gateSim.s.car.x = GS.away; } gatePaint(); break;
+      case 'gate-sim-clear': if (gateSim.s) { gateSim.s.clearSensor = !gateSim.s.clearSensor; gateSim.s.laneBusy = false; gateSim.s.passSeen = false; } gatePaint(); break;
       case 'toggle-live': campus.live = !campus.live; render(); break;
       case 'auth-tab': ui.authTab = el.dataset.tab; mountAuth(true); break;
       case 'toggle-pw': {
@@ -1851,6 +2458,7 @@
       FB.auth.signOut().catch(() => { /* already signed out */ });
       resetCloud();
     }
+    gateDisconnect();
     clearSession();
     closeModal();
     closeSheet();

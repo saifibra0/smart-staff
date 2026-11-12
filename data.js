@@ -49,6 +49,19 @@ window.DEMO_DATA = {
     appId: '1:360538043305:web:4956327dec754d1cdb4ab8'
   },
 
+  /*
+   * Automatic entrance gate (ESP32 + HC-SR04 + servo), shown on the Entrance Gate page.
+   * databaseURL: the Firebase Realtime Database URL, shown at the top of Firebase console >
+   * Realtime Database > Data. While it is empty the page shows the setup steps and offers
+   * simulation mode. Firmware, wiring and setup guide: esp32/README.md.
+   */
+  gate: {
+    databaseURL: '',
+    offlineAfterMs: 6000, // no status from the ESP32 for this long = ESP32 OFFLINE
+    // Simulation only. The real values are in esp32/smart_gate/config.h.
+    sim: { detectCm: 15, hysteresisCm: 5, openAngle: 90, closedAngle: 0, stepMs: 15, clearHoldMs: 2000 }
+  },
+
   // Offered when staff sign up.
   departments: [
     'Dean\'s Office', 'Academic Affairs', 'Facilities', 'Laboratories', 'IT Services',

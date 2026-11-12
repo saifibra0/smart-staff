@@ -1236,3 +1236,142 @@ button.kpi:hover { border-color: var(--accent); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }
+
+/* ---------- automatic entrance gate (ESP32 + HC-SR04 + servo) ---------- */
+.gate-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(280px, 1fr); gap: 18px; align-items: start; }
+.gsrc-sim { color: var(--warn-ink); background: var(--warn-bg); }
+.gsrc-sim i { background: var(--warn); }
+.gbanner {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px;
+  padding: 12px 16px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--surface);
+}
+.gbanner > svg.lucide { width: 22px; height: 22px; }
+.gbanner b { display: block; font-size: 13.5px; letter-spacing: .04em; }
+.gbanner span { display: block; color: var(--fg-2); font-size: 13px; margin-top: 2px; }
+.gbanner.sim {
+  border: 2px dashed var(--warn); color: var(--warn-ink);
+  background: repeating-linear-gradient(135deg, var(--warn-bg) 0 14px, var(--surface) 14px 28px);
+}
+.gbanner.sim span { color: var(--fg); }
+.gbanner.off > svg.lucide { color: var(--muted); }
+.gbanner.warn { border-color: var(--bad); }
+.gbanner.warn > svg.lucide { color: var(--bad); }
+#g-banner:empty { display: none; }
+
+/* the animated scene */
+.gscene { display: block; width: 100%; height: auto; border-radius: 10px; background: var(--surface-2); }
+.gs-ground { fill: var(--surface-3); }
+.gs-lane { stroke: var(--muted); stroke-width: 2; stroke-dasharray: 14 12; opacity: .6; }
+.gs-zone { fill: var(--accent-soft); }
+.gs-label { fill: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .08em; }
+.gs-sign rect { fill: var(--fg-2); }
+.gs-sign .gs-sign-p { fill: var(--accent); }
+.gs-sign text { fill: #fff; font-size: 24px; font-weight: 700; }
+.gs-sensor rect { fill: var(--fg-2); }
+.gs-sensor .gs-hc { fill: #2f6fbf; }
+.gs-sensor circle { fill: #d7e3f2; }
+.gs-clear.is-hidden { display: none; }
+.gs-clear .gs-led { fill: var(--ns); }
+.gs-clear.is-hit .gs-led { fill: var(--warn); }
+.gs-beam { color: var(--accent); transition: color .2s; }
+.gs-beam.is-hit { color: var(--ok); }
+.gs-beam.is-off { display: none; }
+.gs-ping { fill: none; stroke: currentColor; stroke-width: 2; opacity: 0; animation: g-ping 1.2s linear infinite; }
+.gs-ping.p2 { animation-delay: .4s; }
+.gs-ping.p3 { animation-delay: .8s; }
+@keyframes g-ping { 0% { transform: translateX(0); opacity: .9; } 100% { transform: translateX(-150px); opacity: 0; } }
+.gs-dist { fill: var(--fg); font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.gs-post rect { fill: var(--fg-2); }
+.gs-post .gs-servo { fill: #1d2a3b; }
+.gs-post .gs-lamp { fill: #1d2a3b; }
+.gs-pivot { fill: #94a3b8; stroke: #1d2a3b; stroke-width: 2; }
+.gs-arm { transform-box: view-box; transform-origin: 470px 170px; }
+.gs-arm-edge { fill: none; stroke: rgba(0, 0, 0, .35); stroke-width: 1; }
+.gs-light { stroke: rgba(0, 0, 0, .3); stroke-width: 2; transition: fill .2s; }
+.gl-closed { fill: var(--bad); background: var(--bad); }
+.gl-open { fill: var(--ok); background: var(--ok); }
+.gl-moving { fill: var(--warn); background: var(--warn); }
+.gl-off { fill: var(--ns); background: var(--ns); }
+.gl-stop { fill: var(--bad); background: var(--bad); }
+.gs-light.gl-moving { animation: g-blink .5s steps(1) infinite; }
+.gs-light.gl-stop { animation: g-blink .25s steps(1) infinite; }
+@keyframes g-blink { 50% { opacity: .25; } }
+.gs-car { transform-box: view-box; }
+.gs-car-body { fill: var(--accent); }
+.gs-car-glass { fill: #cfe3ff; opacity: .9; }
+.gs-car-lamp { fill: #ffd76a; }
+.gs-wheel { fill: #1b2431; }
+.gs-hub { fill: #9aa7b8; }
+.glegend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 10px; font-size: 12.5px; color: var(--fg-2); }
+.glegend span { display: inline-flex; align-items: center; gap: 6px; }
+.glegend i { width: 10px; height: 10px; border-radius: 50%; }
+.gsim-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--warn); }
+#g-sim:empty { display: none; }
+
+/* live monitoring */
+.gmon { display: flex; flex-direction: column; margin: 0; }
+.gm-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 0; border-top: 1px solid var(--line); }
+.gm-row:first-child { border-top: 0; }
+.gm-row dt { color: var(--fg-2); font-size: 13px; }
+.gm-row dd { margin: 0; }
+.gm-num { font-size: 15px; font-variant-numeric: tabular-nums; }
+.gm-angle { display: inline-flex; align-items: center; gap: 10px; }
+.gm-angle b { font-variant-numeric: tabular-nums; min-width: 34px; text-align: right; }
+.gm-angle .bar { width: 90px; }
+.gm-note { margin: 10px 0 0; padding: 8px 10px; border-radius: 8px; background: var(--surface-2); font-size: 12.5px; color: var(--fg-2); min-height: 1.4em; }
+.gm-note:empty { display: none; }
+.gm-note.is-bad { background: var(--bad-bg); color: var(--bad-ink); font-weight: 600; }
+.gm-meta { margin: 8px 0 0; font-size: 12px; color: var(--muted); }
+
+/* controls */
+.gate-btns { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+.gbtn { height: auto; min-height: 46px; padding: 8px 10px; white-space: normal; text-align: center; line-height: 1.2; font-size: 12.5px; letter-spacing: .03em; border: 1px solid var(--line); background: var(--surface); color: var(--fg); }
+.gbtn:hover:not(:disabled) { border-color: var(--accent); }
+.g-open { background: var(--ok); border-color: var(--ok); color: #fff; }
+.g-close { background: var(--surface-3); }
+.g-close.is-confirm { background: var(--warn); border-color: var(--warn); color: #1b1300; }
+.g-mode.is-on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-ink); }
+.g-estop { background: var(--bad); border-color: var(--bad); color: #fff; font-weight: 800; }
+.g-reset { background: var(--warn-bg); border-color: var(--warn); color: var(--warn-ink); }
+.gfeed { margin: 12px 0 0; font-size: 13px; font-weight: 600; }
+.gfeed.ok { color: var(--ok-ink); }
+.gfeed.bad { color: var(--bad-ink); }
+.gfeed.wait { color: var(--fg-2); }
+.gate-why { display: flex; align-items: center; gap: 7px; margin: 10px 0 0; font-size: 12.5px; color: var(--muted); }
+.gate-why svg.lucide { width: 15px; height: 15px; flex: none; }
+
+/* events + setup */
+.gdot { width: 10px; height: 10px; border-radius: 50%; background: var(--ns); }
+.gdot.tone-ok { background: var(--ok); }
+.gdot.tone-bad { background: var(--bad); }
+.gdot.tone-aw { background: var(--aw); }
+.gdot.tone-ip { background: var(--accent); }
+.gl-row .li-main b { font-weight: 500; }
+.gate-empty { padding: 4px 16px 16px; }
+.gwire { display: block; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: #fff; }
+.gwire img { display: block; width: 100%; height: auto; }
+.gpins { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 12.5px; }
+.gpins td { padding: 6px 0; border-top: 1px solid var(--line); }
+.gpins td:first-child { color: var(--fg-2); padding-right: 10px; }
+.gpins td:last-child { font-weight: 600; text-align: right; }
+.gsteps { margin: 12px 0 0; padding-left: 20px; font-size: 12.5px; color: var(--fg-2); display: grid; gap: 6px; }
+.gate-setup code { font-size: 12px; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+.gate-setup .note { margin-top: 12px; }
+
+@media (max-width: 1180px) {
+  .gate-btns { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 1023px) {
+  .gate-grid { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 560px) {
+  .gate-btns { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .gate-btns .g-estop, .gate-btns .g-reset { grid-column: 1 / -1; }
+  .gbanner { grid-template-columns: auto minmax(0, 1fr); }
+  .gbanner .btn { grid-column: 1 / -1; }
+  .gate-page .band h1 span { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .gs-ping, .gs-light.gl-moving, .gs-light.gl-stop { animation: none; }
+  .gs-ping { opacity: .5; }
+}
