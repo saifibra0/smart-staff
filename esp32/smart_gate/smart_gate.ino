@@ -55,7 +55,7 @@
 #define OTA_PASSWORD ""   // an older secrets.h without it: Wi-Fi updates stay off
 #endif
 
-static const char *FW_VERSION = "1.5.0";
+static const char *FW_VERSION = "1.5.3";
 
 /* ================================================================ settings: setup page first, then secrets.h */
 
@@ -129,7 +129,10 @@ static void sonarStore(Sonar &s, float cm) {
 }
 
 // Returns true once the current ping has finished (with a reading, nothing in range, or no answer).
-bool sonarPoll(Sonar &s) {
+// blank = the servo is moving: a missing echo then is most likely the servo pulling the 5 V down,
+// so it does not count towards a sensor fault (real readings still count).
+static bool echoLostWhileMoving = false;
+bool sonarPoll(Sonar &s, bool blank) {
   if (!s.waiting) return false;
   if (s.fell) {
     s.waiting = false;
@@ -145,6 +148,8 @@ bool sonarPoll(Sonar &s) {
       s.silentPings = 0;
       s.fault = false;
       sonarStore(s, NAN);
+    } else if (blank) {
+      echoLostWhileMoving = true;
     } else if (++s.silentPings >= SENSOR_FAULT_PINGS) {
       s.fault = true;
       s.cm = NAN;
@@ -210,6 +215,21 @@ void servoWrite(int deg) {
 
 static const char *STATE_NAMES[] = {"closed", "opening", "open", "closing", "stopped"};
 
+static uint32_t lastServoStepMs = 0;   // when the servo last moved (for sensor blanking)
+
+// Updating the servo signal blocks for about 40 ms on this ESP32 core (it waits for two 20 ms servo
+// periods). Doing that in the main loop held up the sensor's echo timing, so a separate task on the
+// other core applies the newest wanted angle, and the gate logic just sets servoWantDeg.
+static volatile int servoWantDeg = SERVO_CLOSED_DEG;
+void servoTask(void *) {
+  int applied = -1000;
+  for (;;) {
+    int want = servoWantDeg;
+    if (want != applied) { servoWrite(want); applied = want; }
+    else vTaskDelay(pdMS_TO_TICKS(5));
+  }
+}
+
 struct Gate {
   GateState state = G_CLOSED;
   Mode mode = M_AUTO;
@@ -217,7 +237,8 @@ struct Gate {
   int target = SERVO_CLOSED_DEG;
   bool estop = false;
   uint32_t lastStepMs = 0;
-  uint32_t moveStartMs = 0;     // when the current movement began (for the Serial Monitor)
+  uint32_t moveStartMs = 0;     // when the current movement began
+  int moveFromAngle = SERVO_CLOSED_DEG;   // where it began
   uint32_t slowestLoopMs = 0;   // longest gap between gate updates during the movement
   bool passSeen = false;        // clearance sensor saw the vehicle go through
   uint32_t clearSinceMs = 0;
@@ -244,7 +265,7 @@ static bool laneBlocked() {
 
 void startOpening(const char *why) {
   if (gate.estop) return;
-  if (gate.target != SERVO_OPEN_DEG) { gate.moveStartMs = millis(); gate.slowestLoopMs = 0; }
+  if (gate.target != SERVO_OPEN_DEG) { gate.moveStartMs = millis(); gate.moveFromAngle = gate.angle; gate.slowestLoopMs = 0; }
   gate.target = SERVO_OPEN_DEG;
   gate.state = gate.angle == SERVO_OPEN_DEG ? G_OPEN : G_OPENING;
   gate.passSeen = false;
@@ -262,7 +283,7 @@ bool startClosing(const char *why, const char **err) {
   if (clearance.fault) { *err = "clearance sensor is not answering"; return false; }
   if (laneBusy.on) { *err = "a vehicle is in the lane"; return false; }
 #endif
-  if (gate.target != SERVO_CLOSED_DEG) { gate.moveStartMs = millis(); gate.slowestLoopMs = 0; }
+  if (gate.target != SERVO_CLOSED_DEG) { gate.moveStartMs = millis(); gate.moveFromAngle = gate.angle; gate.slowestLoopMs = 0; }
   gate.target = SERVO_CLOSED_DEG;
   gate.state = gate.angle == SERVO_CLOSED_DEG ? G_CLOSED : G_CLOSING;
   setNote(why);
@@ -325,17 +346,24 @@ void gateUpdate(uint32_t nowMs) {
       setNote(gate.mode == M_MANUAL ? "Open. Manual mode: press CLOSE GATE" : "Open. Waiting for manual close (no clearance sensor)");
     }
 #endif
-    // Smooth movement: one degree every SERVO_STEP_MS.
-    if (gate.angle != gate.target && nowMs - gate.lastStepMs >= SERVO_STEP_MS) {
+    // Smooth movement at 1 degree per SERVO_STEP_MS, timed by the clock: if an update comes late the
+    // barrier catches up, so 0 -> 90 degrees always takes about 90 x SERVO_STEP_MS.
+    if (gate.angle != gate.target) {
+      int span = abs(gate.target - gate.moveFromAngle);
+      int done = min((int)((nowMs - gate.moveStartMs) / SERVO_STEP_MS), span);
+      int next = gate.moveFromAngle + (gate.target > gate.moveFromAngle ? done : -done);
+      if (next != gate.angle) {
       gate.lastStepMs = nowMs;
-      gate.angle += gate.target > gate.angle ? 1 : -1;
-      servoWrite(gate.angle);
+      gate.angle = next;
+      servoWantDeg = gate.angle;
+      lastServoStepMs = nowMs;
       if (gate.angle == gate.target) {
         Serial.printf("[servo] reached %d deg (%lu us pulse) in %lu ms; slowest update gap %lu ms\n", gate.angle,
                       (unsigned long)(SERVO_MIN_US + (uint32_t)(SERVO_MAX_US - SERVO_MIN_US) * gate.angle / 180),
                       (unsigned long)(nowMs - gate.moveStartMs), (unsigned long)gate.slowestLoopMs);
         gate.state = gate.target == SERVO_OPEN_DEG ? G_OPEN : G_CLOSED;
         setNote(gate.state == G_OPEN ? "Gate open" : "Gate closed");
+      }
       }
     }
   }
@@ -1007,6 +1035,11 @@ void setup() {
   pinMode(PIN_ESTOP_BUTTON, INPUT_PULLUP);
 #endif
   servoBegin();
+  {
+    uint32_t t0 = micros();
+    for (int i = 0; i < 5; i++) servoWrite(gate.angle);
+    Serial.printf("[servo] one signal update takes %lu us\n", (unsigned long)((micros() - t0) / 5));
+  }
   servoWrite(gate.angle);       // start with the barrier down
   sonarBegin(entrance, PIN_TRIG, PIN_ECHO);
 #if CLEAR_SENSOR_ENABLED
@@ -1024,6 +1057,8 @@ void setup() {
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);          // faster replies to the website
   WiFi.setAutoReconnect(false);  // the network task retries itself, so the setup Wi-Fi stays stable
+  servoWantDeg = gate.angle;
+  xTaskCreatePinnedToCore(servoTask, "servo", 3072, nullptr, 1, nullptr, 0);
   xTaskCreatePinnedToCore(netTask, "net", 12288, nullptr, 1, nullptr, 0);
   xTaskCreatePinnedToCore(localTask, "local", 8192, nullptr, 1, nullptr, 0);
 }
@@ -1051,7 +1086,9 @@ void loop() {
     sonarPing(entrance);
 #endif
   }
-  if (sonarPoll(entrance)) detectorUpdate(vehicle, entrance.fault ? NAN : entrance.cm, DETECT_MIN_CM, DETECT_CM, DETECT_CM + RELEASE_HYSTERESIS_CM);
+  // While the barrier moves (and briefly after), missing echoes are ignored: see sonarPoll().
+  bool servoBusy = gate.angle != gate.target || now - lastServoStepMs < 400;
+  if (sonarPoll(entrance, servoBusy)) detectorUpdate(vehicle, entrance.fault ? NAN : entrance.cm, DETECT_MIN_CM, DETECT_CM, DETECT_CM + RELEASE_HYSTERESIS_CM);
 
   // Distance in the Serial Monitor (at most twice a second, only when it changes), for checking the wiring.
   static uint32_t lastPrintMs = 0;
@@ -1065,8 +1102,16 @@ void loop() {
     else Serial.printf("[sensor] %.1f cm%s\n", entrance.cm, vehicle.on ? "  (vehicle detected)" : "");
   }
 #if CLEAR_SENSOR_ENABLED
-  if (sonarPoll(clearance)) detectorUpdate(laneBusy, clearance.fault ? NAN : clearance.cm, 0, CLEAR_DETECT_CM, CLEAR_DETECT_CM + RELEASE_HYSTERESIS_CM);
+  if (sonarPoll(clearance, servoBusy)) detectorUpdate(laneBusy, clearance.fault ? NAN : clearance.cm, 0, CLEAR_DETECT_CM, CLEAR_DETECT_CM + RELEASE_HYSTERESIS_CM);
 #endif
+
+  if (echoLostWhileMoving) {
+    static bool told = false;
+    if (!told) {
+      told = true;
+      Serial.println("[sensor] no echo while the servo moves: the servo may be pulling the sensor's 5 V down. Give the servo its own 5 V supply.");
+    }
+  }
 
   // 2. Local emergency stop button.
 #if ESTOP_BUTTON_ENABLED

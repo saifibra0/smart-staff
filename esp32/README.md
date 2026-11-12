@@ -229,6 +229,7 @@ Do these with the barrier arm free to move and nothing in its path.
 | Website stays OFFLINE but the serial log looks fine | `gate.databaseURL` in `data.js` is empty or different |
 | Website buttons say "Not allowed" | You are not signed in as the manager, or the manager email isn't confirmed yet |
 | Distance always "Out of range" | ECHO/TRIG swapped, the sensor has no 5 V, or the divider is wired wrong |
+| Gate keeps reopening, or "Sensor fault" whenever the barrier moves | Use firmware 1.5.3 or newer: a servo update blocks for about 40 ms on ESP32 core 3.x, which made the sensor miss its echo; the updates now run on the other core. If the Serial Monitor still says "no echo while the servo moves", the servo is pulling the sensor's 5 V down: give the servo its own 5 V supply with the capacitor, and join the grounds. |
 | ESP32 resets when the servo moves | Servo is on the ESP32's power. Use the external supply and the capacitor, and join the grounds |
 | `smart-gate.local` doesn't open | Use the IP address from the Serial Monitor instead. The laptop and the ESP32 must be on the same Wi-Fi |
 | No network port in Arduino IDE / Wi-Fi upload times out | Close the gate and clear the sensor first (updates are refused otherwise), check `OTA_PASSWORD` was uploaded by USB once, and allow espota in Windows Firewall |
