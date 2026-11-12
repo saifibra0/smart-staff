@@ -1300,6 +1300,7 @@ button.kpi:hover { border-color: var(--accent); }
 .gs-car-body { fill: var(--accent); }
 .gs-car-glass { fill: #cfe3ff; opacity: .9; }
 .gs-car-lamp { fill: #ffd76a; }
+.gs-car-tail { fill: #e5484d; }
 .gs-wheel { fill: #1b2431; }
 .gs-hub { fill: #9aa7b8; }
 .glegend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 10px; font-size: 12.5px; color: var(--fg-2); }

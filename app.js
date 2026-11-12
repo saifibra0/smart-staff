@@ -1310,9 +1310,10 @@
       <g id="g-arm" class="gs-arm" style="transform: rotate(${arm.deg}deg)"><rect x="336" y="166" width="140" height="8" rx="3" fill="url(#g-stripes)"/><rect class="gs-arm-edge" x="336" y="166" width="140" height="8" rx="3"/></g>
       <circle class="gs-pivot" cx="470" cy="170" r="5"/>
       <g id="g-car" class="gs-car" style="transform: translateX(${car.x}px)">
-        <path class="gs-car-body" d="M6 204 L6 184 Q8 176 20 174 L36 172 L52 152 Q56 148 64 148 L92 148 Q100 148 104 154 L114 172 L122 176 Q128 180 128 190 L128 204 Z"/>
-        <path class="gs-car-glass" d="M58 154 L50 170 L76 170 L76 154 Z M82 154 L82 170 L106 170 L98 156 Q96 154 92 154 Z"/>
-        <rect class="gs-car-lamp" x="122" y="182" width="6" height="6" rx="2"/>
+        <path class="gs-car-body" d="M128 204 L128 184 Q126 176 114 174 L98 172 L82 152 Q78 148 70 148 L42 148 Q34 148 30 154 L20 172 L12 176 Q6 180 6 190 L6 204 Z"/>
+        <path class="gs-car-glass" d="M76 154 L84 170 L58 170 L58 154 Z M52 154 L52 170 L28 170 L36 156 Q38 154 42 154 Z"/>
+        <rect class="gs-car-lamp" x="122" y="180" width="6" height="6" rx="2"/>
+        <rect class="gs-car-tail" x="6" y="182" width="4" height="7" rx="1"/>
         <circle class="gs-wheel" cx="32" cy="206" r="13"/><circle class="gs-wheel" cx="102" cy="206" r="13"/>
         <circle class="gs-hub" cx="32" cy="206" r="5"/><circle class="gs-hub" cx="102" cy="206" r="5"/>
       </g>
