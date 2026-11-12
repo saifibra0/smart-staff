@@ -942,7 +942,7 @@
    * Simulation: the same gate logic runs in this browser, clearly labelled, and never mixes with live data.
    */
   const GATE = Object.assign({ databaseURL: '', offlineAfterMs: 6000 }, D.gate || {});
-  const GSIM = Object.assign({ detectMinCm: 5, detectCm: 10, hysteresisCm: 5, confirm: 3, release: 5, openAngle: 90, closedAngle: 0, stepMs: 15, clearHoldMs: 2000, autoCloseMs: 3000 }, GATE.sim || {});
+  const GSIM = Object.assign({ detectMinCm: 5, detectCm: 10, hysteresisCm: 5, confirm: 2, release: 5, openAngle: 90, closedAngle: 0, stepMs: 8, clearHoldMs: 2000, autoCloseMs: 3000 }, GATE.sim || {});
   const GATE_GUIDE = 'https://github.com/saifibra0/smart-staff/blob/main/esp32/README.md';
   const GATE_CMDS = {
     open: { label: 'OPEN GATE', done: 'Gate opening', icon: 'arrow-up-from-line' },

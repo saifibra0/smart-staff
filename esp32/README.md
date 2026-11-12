@@ -170,7 +170,7 @@ labelled **SIMULATION MODE**, and nothing is sent to the hardware.
 
 | Situation | What happens |
 | --- | --- |
-| Vehicle 5–10 cm from the sensor for 3 readings in a row (AUTOMATIC) | Barrier opens smoothly, 0° → 90° in about 1.4 s |
+| Vehicle 5–10 cm from the sensor for 2 readings in a row (AUTOMATIC) | Barrier opens smoothly, 0° → 90° in about 0.7 s |
 | Something closer than 5 cm or farther than 10 cm | Does not open the gate (but anything within 10 cm blocks closing) |
 | Vehicle still there | Barrier stays open |
 | One HC-SR04 only (default), AUTOMATIC mode | **Closes by itself 3 s after the vehicle leaves the 5–10 cm zone** (`AUTO_CLOSE_AFTER_MS`). Set it to 0 to close only with CLOSE GATE |
@@ -189,14 +189,14 @@ labelled **SIMULATION MODE**, and nothing is sent to the hardware.
 | --- | --- | --- |
 | `DETECT_MIN_CM` / `DETECT_CM` | 5 / 10 | Detection zone: only something between these distances opens the gate |
 | `RELEASE_HYSTERESIS_CM` | 5 | A vehicle must move past 15 cm before it counts as gone |
-| `DETECT_CONFIRM` / `RELEASE_CONFIRM` | 3 / 5 | Readings in a row, to filter noise |
+| `DETECT_CONFIRM` / `RELEASE_CONFIRM` | 2 / 5 | Readings in a row, to filter noise |
 | `SERVO_CLOSED_DEG` / `SERVO_OPEN_DEG` | 0 / 90 | Barrier angles. Swap them if your servo is mounted the other way |
-| `SERVO_STEP_MS` | 15 | ms per degree. Bigger is slower and smoother |
+| `SERVO_STEP_MS` | 8 | ms per degree (0.7 s for 90°). Bigger is slower and smoother |
 | `SERVO_MIN_US` / `SERVO_MAX_US` | 500 / 2500 | Pulse range. Narrow it to 1000/2000 if the servo buzzes at the ends |
 | `CLEAR_SENSOR_ENABLED` | 0 | 1 when the second HC-SR04 is wired |
 | `CLEAR_DETECT_CM` / `CLEAR_HOLD_MS` | 20 / 2000 | Clearance sensor range and how long the lane must stay clear |
 | `ESTOP_BUTTON_ENABLED` | 0 | 1 when the stop button is wired |
-| `CMD_POLL_MS` / `HEARTBEAT_MS` | 400 / 2000 | How often it checks for commands, and its minimum reporting rate |
+| `CMD_POLL_MS` / `HEARTBEAT_MS` | 400 / 2000 | Backup command check if the live command stream is down, and the minimum reporting rate |
 | `DEVICE_HOSTNAME` | smart-gate | Name on the local network (`smart-gate.local`) |
 | `STATUS_PAGE_ENABLED` / `OTA_ENABLED` | 1 / 1 | Local status page, and uploads over Wi-Fi |
 

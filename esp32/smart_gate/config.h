@@ -23,7 +23,7 @@
 #define DETECT_MIN_CM          5.0f  // detection zone: a vehicle between DETECT_MIN_CM and DETECT_CM
 #define DETECT_CM             10.0f  //   opens the gate (closer than 5 cm or farther than 10 cm does not)
 #define RELEASE_HYSTERESIS_CM  5.0f  // it must move past DETECT_CM + this to count as gone
-#define DETECT_CONFIRM            3  // readings in a row needed to say "detected" (filters noise)
+#define DETECT_CONFIRM            2  // readings in a row needed to say "detected" (filters noise)
 #define RELEASE_CONFIRM           5  // readings in a row needed to say "gone"
 #define CLEAR_DETECT_CM       20.0f  // clearance sensor: something closer than this is in the lane
 #define CLEAR_HOLD_MS          2000  // lane must stay clear this long before closing by itself
@@ -33,7 +33,7 @@
 #define AUTO_CLOSE_AFTER_MS    3000
 
 // ---------------------------------------------------------------- HC-SR04 timing
-#define PING_INTERVAL_MS         70  // one reading every 70 ms (the sensor needs at least 60 ms)
+#define PING_INTERVAL_MS         60  // one reading every 60 ms (the sensor needs at least 60 ms)
 #define ECHO_TIMEOUT_US       30000  // no echo end after 30 ms (~5 m) = nothing in range
 #define SENSOR_FAULT_PINGS       10  // this many pings with no echo at all = sensor fault
 #define MAX_RANGE_CM          400.0f
@@ -41,13 +41,13 @@
 // ---------------------------------------------------------------- servo
 #define SERVO_CLOSED_DEG          0  // barrier down
 #define SERVO_OPEN_DEG           90  // barrier up
-#define SERVO_STEP_MS            15  // ms per degree: 90 degrees takes about 1.4 s
+#define SERVO_STEP_MS             8  // ms per degree: 90 degrees takes about 0.7 s (15 = 1.4 s, smoother)
 #define SERVO_MIN_US            500  // pulse width at 0 degrees (SG90 / MG996R: 500-2500)
 #define SERVO_MAX_US           2500  // pulse width at 180 degrees
 
 // ---------------------------------------------------------------- network
-#define CMD_POLL_MS             400  // how often the ESP32 checks for a new command from the website
-#define STATE_MIN_GAP_MS        250  // fastest it sends status updates while something changes
+#define CMD_POLL_MS             400  // backup only: how often to check for commands if the live command stream is down
+#define STATE_MIN_GAP_MS        100  // fastest it sends status updates while something changes
 #define HEARTBEAT_MS           2000  // status update at least this often, so the website knows it is online
 #define CMD_MAX_AGE_MS        15000  // ignore website commands older than this (e.g. sent while offline)
 #define HTTP_TIMEOUT_MS        5000

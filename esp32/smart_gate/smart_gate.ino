@@ -55,7 +55,7 @@
 #define OTA_PASSWORD ""   // an older secrets.h without it: Wi-Fi updates stay off
 #endif
 
-static const char *FW_VERSION = "1.5.3";
+static const char *FW_VERSION = "1.6.0";
 
 /* ================================================================ settings: setup page first, then secrets.h */
 
@@ -482,7 +482,8 @@ static int httpCall(HTTPClient &http, WiFiClientSecure &tls, const char *method,
   if (!http.begin(tls, url)) return -1;
   if (body.length()) http.addHeader("Content-Type", type);
   int code = http.sendRequest(method, body);
-  reply = code > 0 ? http.getString() : String();
+  // 204 No Content has no body; asking for one would wait until Firebase closes the connection.
+  reply = (code > 0 && code != 204) ? http.getString() : String();
   http.end();
   return code;
 }
@@ -564,16 +565,15 @@ static Action parseAction(const String &a, bool &ok) {
   return A_ESTOP;
 }
 
-static void pollCommand() {
-  String reply;
-  int code = httpCall(dbHttp, dbTls, "GET", dbUrl("/gate/command"), "", reply);
-  noteNetResult(code, reply);
-  if (code != 200 || reply == "null") { if (code == 200) firstPoll = false; return; }
+// Handles /gate/command as JSON, from the live stream or the backup poll.
+static void handleCommandJson(const String &reply) {
   String id = jsonValue(reply, "id");
   if (!id.length() || id == lastSeenCmd) { firstPoll = false; return; }
   lastSeenCmd = id;
   if (firstPoll) { firstPoll = false; return; }   // a command from before this boot: never replay it
   uint64_t at = strtoull(jsonValue(reply, "at").c_str(), nullptr, 10);
+  if (timeSynced() && at && epochMs() >= at)
+    Serial.printf("[cmd] %s reached the ESP32 %lu ms after the website sent it\n", id.c_str(), (unsigned long)(epochMs() - at));
   if (timeSynced() && at && epochMs() > at + CMD_MAX_AGE_MS) {
     setLastCommand(id.c_str(), "ignored: command was too old");
     return;
@@ -585,6 +585,131 @@ static void pollCommand() {
   c.action = parseAction(jsonValue(reply, "action"), ok);
   if (!ok) { setLastCommand(c.id, "ignored: unknown command"); return; }
   xQueueSend(commandQueue, &c, 0);
+}
+
+// Backup: ask for the command (used only while the live stream is down).
+static void pollCommand() {
+  String reply;
+  int code = httpCall(dbHttp, dbTls, "GET", dbUrl("/gate/command"), "", reply);
+  noteNetResult(code, reply);
+  if (code != 200) return;
+  if (reply == "null") { firstPoll = false; return; }
+  handleCommandJson(reply);
+}
+
+/* ---------------- live command stream: Firebase pushes /gate/command the moment the website writes it */
+
+static WiFiClientSecure sseTls;
+static bool sseUp = false, sseChunked = false;
+static long sseChunkLeft = 0;
+static String sseToken;   // the sign-in token the open stream uses
+static String sseBuf, sseEvent, sseData;
+static uint32_t sseLastByteMs = 0, sseRetryAtMs = 0, sseBackoffMs = 2000;
+
+static String sseReadLine(uint32_t timeoutMs) {
+  String line;
+  uint32_t start = millis();
+  while (millis() - start < timeoutMs) {
+    while (sseTls.available()) {
+      char c = (char)sseTls.read();
+      if (c == '\n') { line.trim(); return line; }
+      if (line.length() < 1200) line += c;
+    }
+    if (!sseTls.connected()) break;
+    vTaskDelay(pdMS_TO_TICKS(5));
+  }
+  line.trim();
+  return line;
+}
+
+static void sseClose(const char *why) {
+  if (sseUp) Serial.printf("[firebase] command stream closed (%s)\n", why);
+  sseTls.stop();
+  sseUp = false;
+  sseRetryAtMs = millis() + sseBackoffMs;
+  sseBackoffMs = min(sseBackoffMs * 2, (uint32_t)30000);
+}
+
+// Opens GET /gate/command.json with Accept: text/event-stream, following Firebase's redirects.
+static bool sseOpen() {
+  String url = dbUrl("/gate/command");
+  for (int hop = 0; hop < 3; hop++) {
+    if (!url.startsWith("https://")) return false;
+    int slash = url.indexOf('/', 8);
+    String host = url.substring(8, slash < 0 ? url.length() : slash);
+    String path = slash < 0 ? String("/") : url.substring(slash);
+    sseTls.stop();
+    sseTls.setCACert(ROOT_CA);
+    if (!sseTls.connect(host.c_str(), 443, HTTP_TIMEOUT_MS)) { Serial.println("[firebase] command stream: could not connect"); return false; }
+    sseTls.print(String("GET ") + path + " HTTP/1.1\r\nHost: " + host +
+                 "\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n");
+    String status = sseReadLine(HTTP_TIMEOUT_MS);
+    int code = status.length() >= 12 ? status.substring(9, 12).toInt() : 0;
+    String location;
+    sseChunked = false;
+    for (;;) {
+      String h = sseReadLine(HTTP_TIMEOUT_MS);
+      if (!h.length()) break;
+      String lower = h;
+      lower.toLowerCase();
+      if (lower.startsWith("location:")) { location = h.substring(9); location.trim(); }
+      if (lower.startsWith("transfer-encoding:") && lower.indexOf("chunked") > 0) sseChunked = true;
+    }
+    if ((code == 301 || code == 302 || code == 307 || code == 308) && location.length()) { url = location; continue; }
+    if (code == 200) {
+      sseBuf = ""; sseEvent = ""; sseData = ""; sseChunkLeft = 0;
+      sseLastByteMs = millis();
+      sseBackoffMs = 2000;
+      sseToken = idToken;
+      Serial.println("[firebase] command stream open: website commands arrive instantly");
+      return true;
+    }
+    if (code == 401) tokenRefreshAtMs = millis();   // the sign-in token ran out
+    Serial.printf("[firebase] command stream refused (HTTP %d)\n", code);
+    sseTls.stop();
+    return false;
+  }
+  return false;
+}
+
+static void sseDispatch() {
+  if (sseEvent == "put" || sseEvent == "patch") {
+    if (jsonValue(sseData, "path") == "/" && sseData.indexOf("\"data\":null") < 0) handleCommandJson(sseData);
+    else if (sseData.indexOf("\"data\":null") >= 0) firstPoll = false;
+  } else if (sseEvent == "auth_revoked") {
+    tokenRefreshAtMs = millis();   // the token expired: sign in again, then reopen
+    sseClose("sign-in token expired");
+  } else if (sseEvent == "cancel") {
+    sseClose("access cancelled");
+  }
+  sseEvent = "";
+  sseData = "";
+}
+
+// Reads whatever has arrived on the stream without waiting.
+static void ssePump() {
+  if (!sseTls.connected()) { sseClose("connection lost"); return; }
+  while (sseTls.available()) {
+    if (sseChunked && sseChunkLeft == 0) {
+      String size = sseReadLine(1000);
+      if (!size.length()) continue;                          // the CRLF after a chunk
+      sseChunkLeft = strtol(size.c_str(), nullptr, 16);
+      if (sseChunkLeft == 0) { sseClose("server ended the stream"); return; }
+      continue;
+    }
+    char c = (char)sseTls.read();
+    if (sseChunked) sseChunkLeft--;
+    sseLastByteMs = millis();
+    if (c == '\r') continue;
+    if (c != '\n') { if (sseBuf.length() < 1500) sseBuf += c; continue; }
+    if (!sseBuf.length()) { if (sseEvent.length()) sseDispatch(); }
+    else if (sseBuf.startsWith("event:")) { sseEvent = sseBuf.substring(6); sseEvent.trim(); }
+    else if (sseBuf.startsWith("data:")) { sseData = sseBuf.substring(5); sseData.trim(); }
+    sseBuf = "";
+    if (!sseUp) return;
+  }
+  // Firebase sends a keep-alive every 30 s; silence for longer means the connection died quietly.
+  if (millis() - sseLastByteMs > 45000) sseClose("no keep-alive");
 }
 
 static String numOrNull(float v) { return isnan(v) ? String("null") : String(v, 1); }
@@ -625,10 +750,10 @@ static void maybeSendState() {
   String full = body + ",\"rssi\":" + String(WiFi.RSSI()) + ",\"uptimeS\":" + String(millis() / 1000) +
                 ",\"updatedAt\":{\".sv\":\"timestamp\"}}";
   String reply;
-  int code = httpCall(dbHttp, dbTls, "PUT", dbUrl("/gate/state"), full, reply);
+  int code = httpCall(dbHttp, dbTls, "PUT", dbUrl("/gate/state") + "&print=silent", full, reply);
   noteNetResult(code, reply);
   lastSentMs = now;
-  if (code == 200) lastSentState = body;
+  if (code >= 200 && code < 300) lastSentState = body;
   else Serial.printf("[firebase] status update failed (HTTP %d) %s\n", code, reply.c_str());
 }
 
@@ -699,9 +824,18 @@ void netTask(void *) {
       }
     }
     if ((int32_t)(now - pauseUntilMs) < 0) { vTaskDelay(pdMS_TO_TICKS(100)); continue; }
-    if (now - lastPoll >= CMD_POLL_MS) { lastPoll = now; pollCommand(); }
+    if (sseUp && sseToken != idToken) sseClose("new sign-in token");   // reopen with the fresh token
+    if (!sseUp && (int32_t)(now - sseRetryAtMs) >= 0) {
+      sseUp = sseOpen();
+      if (!sseUp) {                                                   // keep polling meanwhile; try again later
+        sseRetryAtMs = millis() + sseBackoffMs;
+        sseBackoffMs = min(sseBackoffMs * 2, (uint32_t)30000);
+      }
+    }
+    if (sseUp) ssePump();
+    else if (now - lastPoll >= CMD_POLL_MS) { lastPoll = now; pollCommand(); }
     if ((int32_t)(millis() - pauseUntilMs) >= 0) maybeSendState();
-    vTaskDelay(pdMS_TO_TICKS(20));
+    vTaskDelay(pdMS_TO_TICKS(5));
   }
 }
 
