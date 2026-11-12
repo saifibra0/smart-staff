@@ -51,3 +51,8 @@
 #define DEVICE_HOSTNAME     "smart-gate"  // the board answers as smart-gate.local
 #define STATUS_PAGE_ENABLED 1             // view-only status page at http://smart-gate.local
 #define OTA_ENABLED         1             // firmware uploads over Wi-Fi (also needs OTA_PASSWORD in secrets.h)
+
+// ---------------------------------------------------------------- Wi-Fi setup from a laptop or phone
+#define SETUP_AP_NAME       "SmartGate-Setup"  // the ESP32's own Wi-Fi, open while it has no working Wi-Fi
+#define SETUP_AP_PASSWORD   "smartgate"        // needed to join it (8+ characters); change it for your own build
+#define SETUP_AFTER_MS      30000              // open the setup Wi-Fi if the saved Wi-Fi fails for this long

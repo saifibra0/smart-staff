@@ -89,9 +89,10 @@ Use the Firebase console for the project **smart-staff-2de6a**: https://console.
 1. Install **Arduino IDE 2**. In *Boards Manager*, install **esp32 by Espressif Systems** (2.x or 3.x;
    tested with 3.3.12). No other libraries are needed.
 2. Open `esp32/smart_gate/smart_gate.ino`. The other files in that folder open as tabs.
-3. Copy `secrets.example.h` to **`secrets.h`** in the same folder and fill in:
-   your Wi-Fi name and password (2.4 GHz), the database URL, the ESP32 account's email and password,
-   and an **update password** (`OTA_PASSWORD`, 8+ characters) for uploads over Wi-Fi later.
+3. Copy `secrets.example.h` to **`secrets.h`** in the same folder. You can leave the Wi-Fi and
+   password lines as they are and set them after the upload instead (section 5, *Setting the Wi-Fi*).
+   Or fill in: your Wi-Fi name and password (2.4 GHz), the ESP32 account's password, and an **update
+   password** (`OTA_PASSWORD`, 8+ characters) for uploads over Wi-Fi later.
    `secrets.h` is in `.gitignore`, so it never goes to GitHub.
 4. *Tools → Board → esp32 → ESP32 Dev Module*. Keep *Tools → Partition Scheme* on the default
    (*Default 4MB with spiffs*): Wi-Fi uploads need it. *Tools → Port*: the COM port that appears when the
@@ -101,8 +102,10 @@ Use the Firebase console for the project **smart-staff-2de6a**: https://console.
 6. Open *Tools → Serial Monitor* at **115200** baud. You should see:
 
    ```
-   Smart Parking entrance gate, firmware 1.1.0
+   Smart Parking entrance gate, firmware 1.3.0
+   [servo] signal on GPIO 18: running (50 Hz)
    [gate] Gate closed
+   [setup] saved Wi-Fi: MyWiFi
    [wifi] connected, IP 192.168.1.23, signal -58 dBm
    [ota] Wi-Fi updates on: network port "smart-gate" (only while the gate is closed)
    [web] status page: http://smart-gate.local  or  http://192.168.1.23
@@ -113,6 +116,22 @@ The on-board LED blinks slowly while connecting, stays on when it is online, bli
 emergency stop, and flickers very fast while new firmware arrives over Wi-Fi.
 
 ## 5. Laptop and ESP32 on the same Wi-Fi
+
+**Setting the Wi-Fi** (no need to edit `secrets.h`). Choose either way:
+
+- **Over the USB cable (easiest):** with the ESP32 plugged in, run this in PowerShell in the `esp32` folder:
+  `powershell -ExecutionPolicy Bypass -File .\setup-wifi.ps1`.
+  It lists the networks your laptop can see. Type the **number** of the gate's network, then the Wi-Fi
+  password, the ESP32 account password and an optional update password. These are typed hidden and go
+  straight to the ESP32. It ends with *"Done: the gate is online"*. If it says the ESP32 restarts *"as soon
+  as the gate is closed"*, unplug and replug the USB to apply the settings now.
+- **From the ESP32's own Wi-Fi:** while it has no working Wi-Fi, the ESP32 opens **SmartGate-Setup**
+  (password `smartgate`, set in `config.h`). Join it from a laptop or phone, and a setup page opens
+  (or go to http://192.168.4.1). Pick your network, fill in the passwords and save. Your laptop has no
+  internet while it is joined to SmartGate-Setup.
+
+Settings saved either way are kept in the ESP32 through restarts and new uploads, and they take
+priority over `secrets.h`. To start over, use *Forget the saved Wi-Fi and passwords* on the setup page.
 
 **No router?** Use the laptop's hotspot: Windows *Settings → Network & internet → Mobile hotspot*.
 Under *Edit* (or *Properties*), set **Network band: 2.4 GHz**. Note the hotspot's name and password, put

@@ -20,10 +20,15 @@
  *  - The network runs in its own task on core 0, so a slow connection never freezes the gate logic,
  *    and the gate keeps working on its own if Wi-Fi drops.
  *
+ * Wi-Fi setup from a laptop or phone
+ *  - With no working Wi-Fi, the ESP32 opens its own Wi-Fi "SmartGate-Setup". Join it and a setup page
+ *    opens (or go to http://192.168.4.1): pick your Wi-Fi, type its password and the ESP32 account
+ *    password, and save. Settings saved there win over secrets.h.
+ *
  * On the same Wi-Fi as your laptop (local network)
  *  - http://smart-gate.local shows a view-only status page straight from the ESP32 (no internet needed).
  *  - After the first USB upload, new firmware can be uploaded over Wi-Fi (Arduino IDE network port
- *    "smart-gate", or esp32/upload-wifi.ps1). It needs OTA_PASSWORD and only runs while the gate is
+ *    "smart-gate", or esp32/upload-wifi.ps1). It needs an update password and only runs while the gate is
  *    closed and nothing is in front of the sensor.
  */
 #include <Arduino.h>
@@ -33,6 +38,9 @@
 #include <ESPmDNS.h>
 #include <ArduinoOTA.h>
 #include <WebServer.h>
+#include <DNSServer.h>
+#include <Preferences.h>
+#include "mbedtls/base64.h"
 #include <sys/time.h>
 #include "config.h"
 #include "gate_types.h"
@@ -46,7 +54,38 @@
 #define OTA_PASSWORD ""   // an older secrets.h without it: Wi-Fi updates stay off
 #endif
 
-static const char *FW_VERSION = "1.1.0";
+static const char *FW_VERSION = "1.3.0";
+
+/* ================================================================ settings: setup page first, then secrets.h */
+
+struct Settings { String ssid, wifiPass, devicePass, otaPass; };
+static Settings cfg;
+static volatile bool setupActive = false;     // the ESP32's own setup Wi-Fi is open
+static volatile uint8_t setupRequest = 0;     // 1 = open the setup Wi-Fi, 2 = close it (done by the local task)
+static const char *setupWhy = "";
+
+static bool isPlaceholder(const char *v) {
+  return !*v || !strcmp(v, "your-wifi-name") || !strcmp(v, "your-wifi-password") || !strcmp(v, "the-password-you-set") ||
+         !strcmp(v, "choose-a-long-random-password") || !strcmp(v, "choose-an-update-password");
+}
+
+// Values saved from the setup page win; otherwise the ones in secrets.h, unless they are still placeholders.
+static void loadSettings() {
+  Preferences p;
+  if (p.begin("gate", true)) {
+    cfg.ssid = p.getString("ssid", "");
+    cfg.wifiPass = p.getString("wpass", "");
+    cfg.devicePass = p.getString("dpass", "");
+    cfg.otaPass = p.getString("opass", "");
+    p.end();
+  }
+  if (!cfg.ssid.length() && !isPlaceholder(WIFI_SSID)) {
+    cfg.ssid = WIFI_SSID;
+    cfg.wifiPass = isPlaceholder(WIFI_PASSWORD) ? "" : WIFI_PASSWORD;
+  }
+  if (!cfg.devicePass.length() && !isPlaceholder(DEVICE_PASSWORD)) cfg.devicePass = DEVICE_PASSWORD;
+  if (!cfg.otaPass.length() && !isPlaceholder(OTA_PASSWORD) && strlen(OTA_PASSWORD) >= 8) cfg.otaPass = OTA_PASSWORD;
+}
 
 /* ================================================================ HC-SR04 (non-blocking) */
 
@@ -145,11 +184,12 @@ static const uint8_t SERVO_CHANNEL = 0;
 
 void servoBegin() {
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
-  ledcAttach(PIN_SERVO, 50, SERVO_RES_BITS);
+  bool ok = ledcAttach(PIN_SERVO, 50, SERVO_RES_BITS);
 #else
-  ledcSetup(SERVO_CHANNEL, 50, SERVO_RES_BITS);
+  bool ok = ledcSetup(SERVO_CHANNEL, 50, SERVO_RES_BITS) > 0;
   ledcAttachPin(PIN_SERVO, SERVO_CHANNEL);
 #endif
+  Serial.printf("[servo] signal on GPIO %d: %s\n", PIN_SERVO, ok ? "running (50 Hz)" : "FAILED to start");
 }
 
 void servoWrite(int deg) {
@@ -174,6 +214,8 @@ struct Gate {
   int target = SERVO_CLOSED_DEG;
   bool estop = false;
   uint32_t lastStepMs = 0;
+  uint32_t moveStartMs = 0;     // when the current movement began (for the Serial Monitor)
+  uint32_t slowestLoopMs = 0;   // longest gap between gate updates during the movement
   bool passSeen = false;        // clearance sensor saw the vehicle go through
   uint32_t clearSinceMs = 0;
   char note[96] = "Starting";
@@ -196,6 +238,7 @@ static bool laneBlocked() {
 
 void startOpening(const char *why) {
   if (gate.estop) return;
+  if (gate.target != SERVO_OPEN_DEG) { gate.moveStartMs = millis(); gate.slowestLoopMs = 0; }
   gate.target = SERVO_OPEN_DEG;
   gate.state = gate.angle == SERVO_OPEN_DEG ? G_OPEN : G_OPENING;
   gate.passSeen = false;
@@ -212,6 +255,7 @@ bool startClosing(const char *why, const char **err) {
   if (clearance.fault) { *err = "clearance sensor is not answering"; return false; }
   if (laneBusy.on) { *err = "a vehicle is in the lane"; return false; }
 #endif
+  if (gate.target != SERVO_CLOSED_DEG) { gate.moveStartMs = millis(); gate.slowestLoopMs = 0; }
   gate.target = SERVO_CLOSED_DEG;
   gate.state = gate.angle == SERVO_CLOSED_DEG ? G_CLOSED : G_CLOSING;
   setNote(why);
@@ -233,6 +277,9 @@ void resetStop() {
 }
 
 void gateUpdate(uint32_t nowMs) {
+  static uint32_t lastUpdateMs = 0;
+  if (gate.angle != gate.target && lastUpdateMs && nowMs - lastUpdateMs > gate.slowestLoopMs) gate.slowestLoopMs = nowMs - lastUpdateMs;
+  lastUpdateMs = nowMs;
   if (!gate.estop) {
     // Safety first: a closing barrier goes back up if anything is detected.
     if (gate.state == G_CLOSING && (vehicle.on || entrance.fault || laneBlocked())) {
@@ -263,6 +310,9 @@ void gateUpdate(uint32_t nowMs) {
       gate.angle += gate.target > gate.angle ? 1 : -1;
       servoWrite(gate.angle);
       if (gate.angle == gate.target) {
+        Serial.printf("[servo] reached %d deg (%lu us pulse) in %lu ms; slowest update gap %lu ms\n", gate.angle,
+                      (unsigned long)(SERVO_MIN_US + (uint32_t)(SERVO_MAX_US - SERVO_MIN_US) * gate.angle / 180),
+                      (unsigned long)(nowMs - gate.moveStartMs), (unsigned long)gate.slowestLoopMs);
         gate.state = gate.target == SERVO_OPEN_DEG ? G_OPEN : G_CLOSED;
         setNote(gate.state == G_OPEN ? "Gate open" : "Gate closed");
       }
@@ -417,7 +467,7 @@ static bool firebaseSignIn() {
     refreshToken = "";   // fall back to a full sign-in
   }
   String body = String("{\"email\":\"") + jsonEscape(DEVICE_EMAIL) + "\",\"password\":\"" +
-                jsonEscape(DEVICE_PASSWORD) + "\",\"returnSecureToken\":true}";
+                jsonEscape(cfg.devicePass.c_str()) + "\",\"returnSecureToken\":true}";
   code = httpCall(authHttp, authTls, "POST",
                   String("https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=") + FIREBASE_API_KEY,
                   body, reply);
@@ -427,6 +477,7 @@ static bool firebaseSignIn() {
     return true;
   }
   Serial.printf("[firebase] sign-in failed (HTTP %d): %s\n", code, reply.c_str());
+  if (code == 400 && !setupActive) { setupWhy = "Firebase rejected the ESP32 account password"; setupRequest = 1; }
   return false;
 }
 
@@ -535,21 +586,43 @@ static void maybeSendState() {
 void netTask(void *) {
   dbTls.setCACert(ROOT_CA);
   authTls.setCACert(ROOT_CA);
-  uint32_t lastWifiTry = 0, lastPoll = 0;
+  uint32_t lastWifiTry = 0, lastPoll = 0, failingSinceMs = 0, setupIdleSinceMs = 0;
   bool timeStarted = false;
   for (;;) {
     uint32_t now = millis();
     if (otaActive) { vTaskDelay(pdMS_TO_TICKS(200)); continue; }   // a firmware update has the network
     if (WiFi.status() != WL_CONNECTED) {
       netLevel = 0;
-      if (!lastWifiTry || now - lastWifiTry > 10000) {
+      if (!cfg.ssid.length()) {
+        if (!setupActive && !setupRequest) { setupWhy = "No Wi-Fi saved yet"; setupRequest = 1; }
+        vTaskDelay(pdMS_TO_TICKS(200));
+        continue;
+      }
+      if (!failingSinceMs) failingSinceMs = now ? now : 1;
+      if (!setupActive && !setupRequest && now - failingSinceMs > SETUP_AFTER_MS) {
+        setupWhy = "Could not join the saved Wi-Fi";
+        setupRequest = 1;
+      }
+      // With the setup Wi-Fi open, retry rarely and never while a laptop is using the setup page
+      // (a connection attempt makes the ESP32 hop channels, which drops the laptop).
+      bool someoneOnSetup = setupActive && WiFi.softAPgetStationNum() > 0;
+      uint32_t gap = setupActive ? 60000 : 10000;
+      if (!someoneOnSetup && (!lastWifiTry || now - lastWifiTry > gap)) {
         lastWifiTry = now;
-        Serial.printf("[wifi] connecting to %s...\n", WIFI_SSID);
+        Serial.printf("[wifi] connecting to %s...\n", cfg.ssid.c_str());
         WiFi.disconnect();
-        WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+        WiFi.begin(cfg.ssid.c_str(), cfg.wifiPass.c_str());
       }
       vTaskDelay(pdMS_TO_TICKS(200));
       continue;
+    }
+    failingSinceMs = 0;
+    // Close the setup Wi-Fi once everything works and nobody has used it for 2 minutes.
+    if (setupActive && netLevel == 2 && WiFi.softAPgetStationNum() == 0) {
+      if (!setupIdleSinceMs) setupIdleSinceMs = now;
+      else if (now - setupIdleSinceMs > 120000 && !setupRequest) setupRequest = 2;
+    } else {
+      setupIdleSinceMs = 0;
     }
     if (!timeStarted) {
       timeStarted = true;
@@ -558,6 +631,14 @@ void netTask(void *) {
     }
     if (!timeSynced()) { netLevel = 1; vTaskDelay(pdMS_TO_TICKS(250)); continue; }
 
+    if (!cfg.devicePass.length()) {
+      static bool told = false;
+      if (!told) { told = true; Serial.println("[firebase] no ESP32 account password yet: enter it on the setup page"); }
+      netLevel = 1;
+      if (!setupActive && !setupRequest) { setupWhy = "The ESP32 account password is missing"; setupRequest = 1; }
+      vTaskDelay(pdMS_TO_TICKS(500));
+      continue;
+    }
     if (!idToken.length() || (int32_t)(now - tokenRefreshAtMs) >= 0) {
       if ((int32_t)(now - authRetryAtMs) < 0) { vTaskDelay(pdMS_TO_TICKS(250)); continue; }
       if (!firebaseSignIn()) {
@@ -575,10 +656,14 @@ void netTask(void *) {
   }
 }
 
-/* ================================================================ local network: status page + Wi-Fi updates (core 0) */
+/* ================================================================ local network: status page, Wi-Fi setup, Wi-Fi updates (core 0) */
 
 static WebServer web(80);
+static DNSServer dns;
 static bool otaOn = false;
+static uint32_t setupSinceMs = 0;
+static volatile bool restartPending = false;
+static uint32_t restartAtMs = 0;
 
 static const char STATUS_PAGE[] PROGMEM = R"HTML(<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Smart gate</title><style>
@@ -599,7 +684,7 @@ const R=[["Gate",s=>[s.gate.toUpperCase(),s.gate=="open"?"ok":s.gate=="closed"?"
 ["Emergency stop",s=>[s.estop?"ACTIVE":"Off",s.estop?"bad":""]],
 ["Clearance sensor",s=>[!s.clearSensor?"Not installed":s.laneBusy?"Vehicle in lane":"Clear"]],
 ["Website link",s=>[["Offline","Wi-Fi only","Online"][s.net],["bad","warn","ok"][s.net]]],
-["Wi-Fi updates",s=>s.ota=="ready"?["Ready","ok"]:s.ota=="busy"?["Only while the gate is closed","warn"]:["Off: set OTA_PASSWORD"]]];
+["Wi-Fi updates",s=>s.ota=="ready"?["Ready","ok"]:s.ota=="busy"?["Only while the gate is closed","warn"]:["Off: no update password"]]];
 async function tick(){try{const s=await(await fetch("/status.json",{cache:"no-store"})).json();const c=document.getElementById("c");c.textContent="";
 for(const[l,f]of R){const[v,k]=f(s),r=document.createElement("div"),a=document.createElement("span"),b=document.createElement("b");
 r.className="row";a.textContent=l;b.textContent=v;if(k)b.className=k;r.append(a,b);c.append(r);}
@@ -607,13 +692,63 @@ document.getElementById("m").textContent=(s.note?s.note+" · ":"")+"Firmware "+s
 catch(e){document.getElementById("m").textContent="Lost contact with the ESP32. Is it on the same Wi-Fi?";}}
 tick();setInterval(tick,1000);</script></body></html>)HTML";
 
-static bool otaPasswordOk() {
-  return strlen(OTA_PASSWORD) >= 8 && strcmp(OTA_PASSWORD, "choose-an-update-password") != 0;
-}
+// Shown only to devices joined to the ESP32's own setup Wi-Fi. Passwords are sent, never shown back.
+static const char SETUP_PAGE[] PROGMEM = R"HTML(<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Smart gate setup</title><style>
+:root{color-scheme:light dark;--bg:#f4f7fb;--card:#fff;--fg:#0f172a;--mut:#64748b;--line:#dfe6ef;--acc:#1f6fe0;--bad:#bb2329;--ok:#11744a}
+@media(prefers-color-scheme:dark){:root{--bg:#0a1420;--card:#101d2e;--fg:#e5edf7;--mut:#8b9bb0;--line:#22364f;--acc:#4b8ff2;--bad:#ff9195;--ok:#6fd9a5}}
+body{margin:0;font:15px system-ui,"Segoe UI",sans-serif;background:var(--bg);color:var(--fg)}
+main{max-width:480px;margin:0 auto;padding:16px}h1{font-size:20px;margin:4px 0 4px}p{color:var(--mut);margin:0 0 6px}
+form{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:4px 16px 16px;margin-top:12px}
+label{display:block;font-weight:600;margin:14px 0 6px}
+input,select{width:100%;box-sizing:border-box;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--fg);font:inherit}
+.hint{color:var(--mut);font-size:13px;margin-top:5px}
+.go{margin-top:18px;width:100%;padding:12px;border:0;border-radius:9px;background:var(--acc);color:#fff;font:inherit;font-weight:700;cursor:pointer}
+.link{background:none;border:0;color:var(--mut);text-decoration:underline;font:inherit;font-size:13px;margin-top:14px;cursor:pointer;padding:0}
+#msg{font-weight:600;margin-top:14px}#msg.bad{color:var(--bad)}#msg.ok{color:var(--ok)}
+</style></head><body><main><h1>Smart Parking gate &middot; Wi-Fi setup</h1><p id="cur">Loading&hellip;</p>
+<form id="f" autocomplete="off">
+<label for="net">Wi-Fi network</label><select id="net"><option value="">Searching for networks&hellip;</option></select>
+<input id="ssid" name="ssid" maxlength="32" placeholder="or type the network name" style="margin-top:8px">
+<div class="hint">2.4 GHz networks only. A phone hotspot works too.</div>
+<label for="wpass">Wi-Fi password</label><input id="wpass" name="wpass" type="password" maxlength="63">
+<label for="dpass">ESP32 account password</label><input id="dpass" name="dpass" type="password" maxlength="100">
+<div class="hint" id="dh"></div>
+<label for="opass">Update password (optional)</label><input id="opass" name="opass" type="password" maxlength="64">
+<div class="hint">For uploading new firmware over Wi-Fi later. At least 8 characters. Leave empty to keep the saved one.</div>
+<button class="go">Save and connect</button><p id="msg" role="status"></p>
+<button type="button" class="link" id="forget">Forget the saved Wi-Fi and passwords</button>
+</form></main><script>
+const $=i=>document.getElementById(i),say=(t,k)=>{$("msg").textContent=t;$("msg").className=k||""};
+fetch("/setup.json").then(r=>r.json()).then(s=>{
+$("cur").textContent=s.ssid?"Saved Wi-Fi: "+s.ssid+(s.wifi?" (connected)":" (could not connect)"):"No Wi-Fi saved yet.";
+$("dh").textContent="The password of "+s.email+" in Firebase. "+(s.devicePass?"Leave empty to keep the saved one.":"Required.");
+$("dpass").required=!s.devicePass;});
+fetch("/scan").then(r=>r.json()).then(list=>{const n=$("net");n.textContent="";n.add(new Option("Choose a network…",""));
+list.sort((a,b)=>b.rssi-a.rssi);for(const w of list)n.add(new Option(w.ssid+"  ("+(w.rssi>-60?"strong":w.rssi>-75?"good":"weak")+(w.open?", open":"")+")",w.ssid));})
+.catch(()=>{const n=$("net");n.textContent="";n.add(new Option("Could not search: type the name below",""));});
+$("net").onchange=()=>{if($("net").value)$("ssid").value=$("net").value;};
+$("f").onsubmit=async e=>{e.preventDefault();const b=new URLSearchParams(new FormData($("f")));
+if(!b.get("ssid")){say("Choose or type a Wi-Fi network.","bad");return;}
+say("Saving…");try{const r=await(await fetch("/save",{method:"POST",body:b})).json();say(r.message,r.ok?"ok":"bad");}
+catch(x){say("Saved. The ESP32 is restarting.","ok");}};
+$("forget").onclick=async()=>{if(!confirm("Forget the saved Wi-Fi and passwords?"))return;
+try{const r=await(await fetch("/forget",{method:"POST"})).json();say(r.message,"ok");}catch(x){say("Done. The ESP32 is restarting.","ok");}};
+</script></body></html>)HTML";
+
+static bool otaPasswordOk() { return cfg.otaPass.length() >= 8; }
 
 static const char *otaState() {
   if (!OTA_ENABLED || !otaOn) return "off";
   return otaAllowed ? "ready" : "busy";
+}
+
+// True when the browser is on the ESP32's own setup Wi-Fi (not your normal network).
+static bool fromSetupWifi() { return setupActive && web.client().localIP() == WiFi.softAPIP(); }
+
+static void sendJson(int code, const String &json) {
+  web.sendHeader("Cache-Control", "no-store");
+  web.send(code, "application/json", json);
 }
 
 static void handleStatus() {
@@ -621,19 +756,175 @@ static void handleStatus() {
   portENTER_CRITICAL(&shareMux);
   s = shared;
   portEXIT_CRITICAL(&shareMux);
-  String j = stateJson(s) + ",\"rssi\":" + String(WiFi.RSSI()) + ",\"uptimeS\":" + String(millis() / 1000) +
-             ",\"ip\":\"" + WiFi.localIP().toString() + "\",\"net\":" + String(netLevel) +
-             ",\"ota\":\"" + otaState() + "\"}";
-  web.sendHeader("Cache-Control", "no-store");
-  web.send(200, "application/json", j);
+  sendJson(200, stateJson(s) + ",\"rssi\":" + String(WiFi.RSSI()) + ",\"uptimeS\":" + String(millis() / 1000) +
+                ",\"ip\":\"" + WiFi.localIP().toString() + "\",\"net\":" + String(netLevel) +
+                ",\"ota\":\"" + otaState() + "\"}");
 }
 
-static void startLocalServices() {
+static void handleSetupInfo() {
+  if (!fromSetupWifi()) { web.send(403, "text/plain", "Only from the setup Wi-Fi"); return; }
+  sendJson(200, String("{\"ssid\":\"") + jsonEscape(cfg.ssid.c_str()) + "\",\"wifi\":" +
+                (WiFi.status() == WL_CONNECTED ? "true" : "false") + ",\"devicePass\":" +
+                (cfg.devicePass.length() ? "true" : "false") + ",\"email\":\"" + jsonEscape(DEVICE_EMAIL) + "\"}");
+}
+
+static void handleScan() {
+  if (!fromSetupWifi()) { web.send(403, "text/plain", "Only from the setup Wi-Fi"); return; }
+  int n = WiFi.scanNetworks();
+  String j = "[";
+  for (int i = 0; i < n; i++) {
+    String name = WiFi.SSID(i);
+    if (!name.length()) continue;
+    String quoted = "\"" + jsonEscape(name.c_str()) + "\"";
+    if (j.indexOf(quoted) >= 0) continue;   // the same network seen on two access points
+    if (j.length() > 1) j += ",";
+    j += "{\"ssid\":" + quoted + ",\"rssi\":" + String(WiFi.RSSI(i)) + ",\"open\":" +
+         (WiFi.encryptionType(i) == WIFI_AUTH_OPEN ? "true" : "false") + "}";
+  }
+  WiFi.scanDelete();
+  sendJson(200, j + "]");
+}
+
+static void setupReply(bool ok, const String &msg) {
+  sendJson(ok ? 200 : 400, String("{\"ok\":") + (ok ? "true" : "false") + ",\"message\":\"" + jsonEscape(msg.c_str()) + "\"}");
+}
+
+// Checks and saves new settings (from the setup page or the USB cable). They apply after a restart.
+static bool saveSettings(String ssid, const String &wpass, const String &dpass, const String &opass, String &msg) {
+  ssid.trim();
+  if (!ssid.length() || ssid.length() > 32) { msg = "Choose or type a Wi-Fi network."; return false; }
+  if (wpass.length() && (wpass.length() < 8 || wpass.length() > 63)) { msg = "Wi-Fi passwords have 8 to 63 characters. Check it again."; return false; }
+  if (!dpass.length() && !cfg.devicePass.length()) { msg = "Enter the ESP32 account password."; return false; }
+  if (opass.length() && opass.length() < 8) { msg = "The update password needs at least 8 characters."; return false; }
+  Preferences p;
+  if (!p.begin("gate", false)) { msg = "Could not save on the ESP32 (storage error)."; return false; }
+  p.putString("ssid", ssid);
+  p.putString("wpass", wpass);
+  if (dpass.length()) p.putString("dpass", dpass);
+  if (opass.length()) p.putString("opass", opass);
+  p.end();
+  Serial.printf("[setup] saved Wi-Fi \"%s\"; restarting to use it\n", ssid.c_str());
+  restartPending = true;
+  restartAtMs = millis() + 2000;
+  msg = String("Saved. The ESP32 restarts and joins \"") + ssid + "\"" + (otaAllowed ? "." : " as soon as the gate is closed.");
+  return true;
+}
+
+static void handleSave() {
+  if (!fromSetupWifi()) { web.send(403, "text/plain", "Only from the setup Wi-Fi"); return; }
+  String msg;
+  bool ok = saveSettings(web.arg("ssid"), web.arg("wpass"), web.arg("dpass"), web.arg("opass"), msg);
+  setupReply(ok, ok ? msg + " Now reconnect this laptop to your normal Wi-Fi and open the website." : msg);
+}
+
+// Settings over the USB cable, sent by esp32/setup-wifi.ps1 as one line:
+//   GATESET <ssid> <wifi password> <ESP32 account password> <update password>
+// Each value is base64 (so spaces and symbols survive); "-" means empty. Passwords are never printed.
+static String b64decode(const String &in) {
+  if (in == "-") return String();
+  size_t outLen = 0;
+  unsigned char buf[160];
+  if (mbedtls_base64_decode(buf, sizeof(buf) - 1, &outLen, (const unsigned char *)in.c_str(), in.length()) != 0) return String();
+  buf[outLen] = 0;
+  return String((const char *)buf);
+}
+
+static void handleSerialLine(String line) {
+  line.trim();
+  if (line == "GATEINFO") {
+    Serial.printf("[setup] INFO wifi=\"%s\" connected=%s devicePassword=%s updatePassword=%s\n", cfg.ssid.c_str(),
+                  WiFi.status() == WL_CONNECTED ? "yes" : "no", cfg.devicePass.length() ? "set" : "missing",
+                  cfg.otaPass.length() ? "set" : "missing");
+    return;
+  }
+  if (!line.startsWith("GATESET ")) return;
+  String part[4];
+  int from = 8;
+  for (int i = 0; i < 4; i++) {
+    int sp = line.indexOf(' ', from);
+    part[i] = line.substring(from, sp < 0 ? line.length() : sp);
+    from = sp < 0 ? line.length() : sp + 1;
+  }
+  String msg;
+  bool ok = saveSettings(b64decode(part[0]), b64decode(part[1]), b64decode(part[2]), b64decode(part[3]), msg);
+  Serial.printf("[setup] %s %s\n", ok ? "OK" : "ERROR", msg.c_str());
+}
+
+static void pollSerialSetup() {
+  static String buf;
+  while (Serial.available()) {
+    char c = (char)Serial.read();
+    if (c == '\n' || c == '\r') {
+      if (buf.length()) handleSerialLine(buf);
+      buf = "";
+    } else if (buf.length() < 600) {
+      buf += c;
+    }
+  }
+}
+
+static void handleForget() {
+  if (!fromSetupWifi()) { web.send(403, "text/plain", "Only from the setup Wi-Fi"); return; }
+  Preferences p;
+  p.begin("gate", false);
+  p.clear();
+  p.end();
+  Serial.println("[setup] saved settings cleared; restarting");
+  restartPending = true;
+  restartAtMs = millis() + 2000;
+  setupReply(true, "Forgotten. The ESP32 restarts and opens this setup Wi-Fi again.");
+}
+
+static void startWeb() {
+  web.on("/", HTTP_GET, []() {
+    if (fromSetupWifi()) web.send(200, "text/html", SETUP_PAGE);
+    else if (STATUS_PAGE_ENABLED) web.send(200, "text/html", STATUS_PAGE);
+    else web.send(404, "text/plain", "Not found");
+  });
+  web.on("/status.json", HTTP_GET, handleStatus);
+  web.on("/setup.json", HTTP_GET, handleSetupInfo);
+  web.on("/scan", HTTP_GET, handleScan);
+  web.on("/save", HTTP_POST, handleSave);
+  web.on("/forget", HTTP_POST, handleForget);
+  web.onNotFound([]() {
+    // On the setup Wi-Fi every address leads to the setup page, so laptops and phones open it by themselves.
+    if (fromSetupWifi()) {
+      web.sendHeader("Location", String("http://") + WiFi.softAPIP().toString() + "/");
+      web.send(302, "text/plain", "");
+    } else {
+      web.send(404, "text/plain", "Not found");
+    }
+  });
+  web.begin();
+}
+
+static void startSetupAp(const char *why) {
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAP(SETUP_AP_NAME, SETUP_AP_PASSWORD);
+  vTaskDelay(pdMS_TO_TICKS(200));
+  dns.setErrorReplyCode(DNSReplyCode::NoError);
+  dns.start(53, "*", WiFi.softAPIP());
+  setupSinceMs = millis();
+  setupActive = true;
+  Serial.printf("[setup] %s. On the laptop, join the Wi-Fi \"%s\" (password: %s); the setup page opens,\n"
+                "        or go to http://%s\n", why, SETUP_AP_NAME, SETUP_AP_PASSWORD, WiFi.softAPIP().toString().c_str());
+}
+
+static void stopSetupAp() {
+  setupActive = false;
+  dns.stop();
+  WiFi.softAPdisconnect(true);
+  WiFi.mode(WIFI_STA);
+  Serial.println("[setup] connected to the saved Wi-Fi; setup Wi-Fi closed");
+}
+
+// OTA and the .local name need the normal Wi-Fi, so they start the first time it connects.
+static void startNetServices() {
   bool mdnsUp = false;
 #if OTA_ENABLED
   if (otaPasswordOk()) {
     ArduinoOTA.setHostname(DEVICE_HOSTNAME);
-    ArduinoOTA.setPassword(OTA_PASSWORD);
+    ArduinoOTA.setPassword(cfg.otaPass.c_str());
     ArduinoOTA.onStart([]() { otaActive = true; Serial.println("[ota] update started; the barrier stays down until the restart"); });
     ArduinoOTA.onProgress([](unsigned int done, unsigned int total) {
       static int lastTen = -1;
@@ -646,33 +937,38 @@ static void startLocalServices() {
     otaOn = mdnsUp = true;
     Serial.printf("[ota] Wi-Fi updates on: network port \"%s\" (only while the gate is closed)\n", DEVICE_HOSTNAME);
   } else {
-    Serial.println("[ota] Wi-Fi updates off: set OTA_PASSWORD (8+ characters) in secrets.h");
+    Serial.println("[ota] Wi-Fi updates off: no update password (set one on the setup page or in secrets.h)");
   }
 #endif
   if (!mdnsUp) mdnsUp = MDNS.begin(DEVICE_HOSTNAME);
-#if STATUS_PAGE_ENABLED
-  web.on("/", HTTP_GET, []() { web.send(200, "text/html", STATUS_PAGE); });
-  web.on("/status.json", HTTP_GET, handleStatus);
-  web.onNotFound([]() { web.send(404, "text/plain", "Not found"); });
-  web.begin();
   if (mdnsUp) MDNS.addService("http", "tcp", 80);
+#if STATUS_PAGE_ENABLED
   Serial.printf("[web] status page: http://%s.local  or  http://%s\n", DEVICE_HOSTNAME, WiFi.localIP().toString().c_str());
 #endif
 }
 
-// Serves the status page and listens for Wi-Fi updates. It is separate from the Firebase task, so a
-// slow HTTPS call never makes the page or an update hang.
+// Runs the web pages, the setup Wi-Fi and Wi-Fi updates. It is separate from the Firebase task, so a
+// slow HTTPS call never makes a page or an update hang.
 void localTask(void *) {
-  bool started = false;
+  startWeb();
+  bool netServicesStarted = false;
   for (;;) {
-    if (WiFi.status() == WL_CONNECTED) {
-      if (!started) { started = true; startLocalServices(); }
+    uint8_t req = setupRequest;
+    setupRequest = 0;
+    if (req == 1 && !setupActive) startSetupAp(setupWhy);
+    else if (req == 2 && setupActive) stopSetupAp();
+    if (setupActive) dns.processNextRequest();
+    if (WiFi.status() == WL_CONNECTED && !netServicesStarted) { netServicesStarted = true; startNetServices(); }
 #if OTA_ENABLED
-      if (otaOn && (otaAllowed || otaActive)) ArduinoOTA.handle();
+    if (otaOn && (otaAllowed || otaActive)) ArduinoOTA.handle();
 #endif
-#if STATUS_PAGE_ENABLED
-      web.handleClient();
-#endif
+    web.handleClient();
+    pollSerialSetup();
+    // New settings take effect after a restart, which only happens while the gate is closed and idle.
+    if (restartPending && otaAllowed && (int32_t)(millis() - restartAtMs) >= 0) {
+      Serial.println("[setup] restarting with the new settings");
+      vTaskDelay(pdMS_TO_TICKS(200));
+      ESP.restart();
     }
     vTaskDelay(pdMS_TO_TICKS(5));
   }
@@ -699,14 +995,16 @@ void setup() {
   setNote("Gate closed");
   publishSnapshot();
 
+  loadSettings();
+  if (cfg.ssid.length()) Serial.printf("[setup] saved Wi-Fi: %s\n", cfg.ssid.c_str());
+  else Serial.println("[setup] no Wi-Fi saved yet");
+
   commandQueue = xQueueCreate(8, sizeof(Command));
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);          // faster replies to the website
-  WiFi.setAutoReconnect(true);
+  WiFi.setAutoReconnect(false);  // the network task retries itself, so the setup Wi-Fi stays stable
   xTaskCreatePinnedToCore(netTask, "net", 12288, nullptr, 1, nullptr, 0);
-#if OTA_ENABLED || STATUS_PAGE_ENABLED
   xTaskCreatePinnedToCore(localTask, "local", 8192, nullptr, 1, nullptr, 0);
-#endif
 }
 
 void loop() {
@@ -733,6 +1031,18 @@ void loop() {
 #endif
   }
   if (sonarPoll(entrance)) detectorUpdate(vehicle, entrance.fault ? NAN : entrance.cm, DETECT_CM, DETECT_CM + RELEASE_HYSTERESIS_CM);
+
+  // Distance in the Serial Monitor (at most twice a second, only when it changes), for checking the wiring.
+  static uint32_t lastPrintMs = 0;
+  static float lastPrinted = -2;
+  float shown = entrance.fault ? -1 : isnan(entrance.cm) ? 0 : entrance.cm;
+  if (now - lastPrintMs >= 500 && fabsf(shown - lastPrinted) >= 1.0f) {
+    lastPrintMs = now;
+    lastPrinted = shown;
+    if (entrance.fault) Serial.println("[sensor] no echo at all: check the HC-SR04 wiring and its 5 V");
+    else if (isnan(entrance.cm)) Serial.println("[sensor] nothing in range");
+    else Serial.printf("[sensor] %.1f cm%s\n", entrance.cm, vehicle.on ? "  (vehicle detected)" : "");
+  }
 #if CLEAR_SENSOR_ENABLED
   if (sonarPoll(clearance)) detectorUpdate(laneBusy, clearance.fault ? NAN : clearance.cm, CLEAR_DETECT_CM, CLEAR_DETECT_CM + RELEASE_HYSTERESIS_CM);
 #endif
@@ -753,8 +1063,9 @@ void loop() {
   publishSnapshot();
   otaAllowed = gate.state == G_CLOSED && gate.angle == gate.target && !gate.estop && !vehicle.on && !entrance.fault;
 
-  // 5. Status LED: steady = online, slow blink = connecting, fast blink = emergency stop.
-  bool led = gate.estop ? (now / 100) % 2 : netLevel == 2 ? true : (now / 500) % 2;
+  // 5. Status LED: steady = online, slow blink = connecting, short flash = setup Wi-Fi open,
+  //    fast blink = emergency stop.
+  bool led = gate.estop ? (now / 100) % 2 : netLevel == 2 ? true : setupActive ? (now % 1500) < 150 : (now / 500) % 2;
   digitalWrite(PIN_STATUS_LED, led);
 
   delay(1);
