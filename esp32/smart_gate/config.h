@@ -27,6 +27,10 @@
 #define RELEASE_CONFIRM           5  // readings in a row needed to say "gone"
 #define CLEAR_DETECT_CM       20.0f  // clearance sensor: something closer than this is in the lane
 #define CLEAR_HOLD_MS          2000  // lane must stay clear this long before closing by itself
+// With only the entrance sensor (AUTOMATIC mode): close by itself this long after the vehicle has left
+// the detection zone, giving it time to drive under the barrier. 0 = never close by itself (only the
+// CLOSE GATE button). Not used when the clearance sensor is installed.
+#define AUTO_CLOSE_AFTER_MS    3000
 
 // ---------------------------------------------------------------- HC-SR04 timing
 #define PING_INTERVAL_MS         70  // one reading every 70 ms (the sensor needs at least 60 ms)

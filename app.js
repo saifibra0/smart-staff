@@ -942,7 +942,7 @@
    * Simulation: the same gate logic runs in this browser, clearly labelled, and never mixes with live data.
    */
   const GATE = Object.assign({ databaseURL: '', offlineAfterMs: 6000 }, D.gate || {});
-  const GSIM = Object.assign({ detectMinCm: 5, detectCm: 10, hysteresisCm: 5, confirm: 3, release: 5, openAngle: 90, closedAngle: 0, stepMs: 15, clearHoldMs: 2000 }, GATE.sim || {});
+  const GSIM = Object.assign({ detectMinCm: 5, detectCm: 10, hysteresisCm: 5, confirm: 3, release: 5, openAngle: 90, closedAngle: 0, stepMs: 15, clearHoldMs: 2000, autoCloseMs: 3000 }, GATE.sim || {});
   const GATE_GUIDE = 'https://github.com/saifibra0/smart-staff/blob/main/esp32/README.md';
   const GATE_CMDS = {
     open: { label: 'OPEN GATE', done: 'Gate opening', icon: 'arrow-up-from-line' },
@@ -1196,7 +1196,12 @@
             if (!s.clearSince) s.clearSince = Date.now();
             else if (Date.now() - s.clearSince >= GSIM.clearHoldMs) simClose(s, 'Closed automatically: lane clear');
           }
-        } else if (!s.clearSensor) s.note = 'Open. Waiting for manual close (no clearance sensor)';
+        } else if (!s.clearSensor && s.mode === 'auto' && GSIM.autoCloseMs > 0) {
+          // One sensor: close a few seconds after the car has left the zone, as the firmware does.
+          if (s.vehicle || (s.distanceCm !== null && s.distanceCm <= GSIM.detectCm)) { s.clearSince = 0; s.note = 'Open. Vehicle at the gate'; }
+          else if (!s.clearSince) { s.clearSince = Date.now(); s.note = 'Open. No vehicle: closing in a few seconds'; }
+          else if (Date.now() - s.clearSince >= GSIM.autoCloseMs) simClose(s, 'Closed automatically: no vehicle');
+        } else if (!s.clearSensor) s.note = s.mode === 'manual' ? 'Open. Manual mode: press CLOSE GATE' : 'Open. Waiting for manual close (no clearance sensor)';
       }
       s.acc += 50;
       while (s.acc >= GSIM.stepMs && s.angle !== s.target) {
@@ -1218,7 +1223,7 @@
     if (!s) return null;
     return {
       distanceCm: s.distanceCm, sensorOk: true, vehicle: s.vehicle, gate: s.gate, angle: s.angle,
-      openAngle: GSIM.openAngle, closedAngle: GSIM.closedAngle, stepMs: GSIM.stepMs, detectCm: GSIM.detectCm,
+      openAngle: GSIM.openAngle, closedAngle: GSIM.closedAngle, stepMs: GSIM.stepMs, detectCm: GSIM.detectCm, autoCloseMs: GSIM.autoCloseMs,
       mode: s.mode, estop: s.estop, clearSensor: s.clearSensor, clearCm: s.clearCm, clearOk: true,
       laneBusy: s.laneBusy, note: s.hazard ? 'UNSAFE: the barrier is coming down on the car. A clearance sensor would stop this.' : s.note
     };
@@ -1390,7 +1395,9 @@
     const fb = busy ? { ok: null, text: `Sending “${GATE_CMDS[p.action].label}” to the ESP32…` } : gateUi.feedback;
     const why = m.src === 'live' && !isManager() ? 'View only: only the manager account can control the gate.'
       : m.src === 'offline' || m.src === 'setup' ? 'The controls work when the ESP32 is online, or in simulation mode.'
-        : !st.clearSensor && m.has ? 'One sensor only: the gate never closes by itself. Check the lane is clear before closing.' : '';
+        : !st.clearSensor && m.has ? (st.autoCloseMs > 0 && st.mode !== 'manual'
+          ? `One sensor only: the gate closes by itself ${Math.round(st.autoCloseMs / 1000)} s after the car leaves the sensor. It cannot see a car under the barrier.`
+          : 'One sensor only: the gate does not close by itself. Check the lane is clear before closing.') : '';
     return `<div class="gate-btns">
         ${btn('open', 'g-open', st.estop || st.gate === 'open' || st.gate === 'opening')}
         ${btn('close', `g-close${confirming ? ' is-confirm' : ''}`, st.estop || st.gate === 'closed' || st.gate === 'closing', closeLabel)}

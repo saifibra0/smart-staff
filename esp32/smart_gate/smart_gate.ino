@@ -55,7 +55,7 @@
 #define OTA_PASSWORD ""   // an older secrets.h without it: Wi-Fi updates stay off
 #endif
 
-static const char *FW_VERSION = "1.4.0";
+static const char *FW_VERSION = "1.5.0";
 
 /* ================================================================ settings: setup page first, then secrets.h */
 
@@ -309,7 +309,21 @@ void gateUpdate(uint32_t nowMs) {
       }
     }
 #else
-    if (gate.state == G_OPEN) setNote("Open. Waiting for manual close (no clearance sensor)");
+    // One sensor: close a few seconds after the vehicle has left the zone (it cannot see under the barrier).
+    if (gate.mode == M_AUTO && gate.state == G_OPEN && AUTO_CLOSE_AFTER_MS > 0) {
+      if (vehicle.on || somethingClose() || entrance.fault) {
+        gate.clearSinceMs = 0;
+        setNote("Open. Vehicle at the gate");
+      } else if (!gate.clearSinceMs) {
+        gate.clearSinceMs = nowMs ? nowMs : 1;
+        setNote("Open. No vehicle: closing in a few seconds");
+      } else if (nowMs - gate.clearSinceMs >= AUTO_CLOSE_AFTER_MS) {
+        const char *err;
+        startClosing("Closed automatically: no vehicle", &err);
+      }
+    } else if (gate.state == G_OPEN) {
+      setNote(gate.mode == M_MANUAL ? "Open. Manual mode: press CLOSE GATE" : "Open. Waiting for manual close (no clearance sensor)");
+    }
 #endif
     // Smooth movement: one degree every SERVO_STEP_MS.
     if (gate.angle != gate.target && nowMs - gate.lastStepMs >= SERVO_STEP_MS) {
@@ -556,7 +570,7 @@ static String stateJson(const Snapshot &s) {
   j += ",\"gate\":\"" + String(STATE_NAMES[s.state]) + "\"";
   j += ",\"angle\":" + String(s.angle);
   j += ",\"openAngle\":" + String(SERVO_OPEN_DEG) + ",\"closedAngle\":" + String(SERVO_CLOSED_DEG);
-  j += ",\"stepMs\":" + String(SERVO_STEP_MS) + ",\"detectCm\":" + String(DETECT_CM, 1) + ",\"detectMinCm\":" + String(DETECT_MIN_CM, 1);
+  j += ",\"stepMs\":" + String(SERVO_STEP_MS) + ",\"detectCm\":" + String(DETECT_CM, 1) + ",\"detectMinCm\":" + String(DETECT_MIN_CM, 1) + ",\"autoCloseMs\":" + String(CLEAR_SENSOR_ENABLED ? 0 : AUTO_CLOSE_AFTER_MS);
   j += ",\"mode\":\"" + String(s.mode == M_AUTO ? "auto" : "manual") + "\"";
   j += ",\"estop\":" + String(s.estop ? "true" : "false");
   j += ",\"clearSensor\":" + String(CLEAR_SENSOR_ENABLED ? "true" : "false");

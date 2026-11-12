@@ -173,7 +173,8 @@ labelled **SIMULATION MODE**, and nothing is sent to the hardware.
 | Vehicle 5–10 cm from the sensor for 3 readings in a row (AUTOMATIC) | Barrier opens smoothly, 0° → 90° in about 1.4 s |
 | Something closer than 5 cm or farther than 10 cm | Does not open the gate (but anything within 10 cm blocks closing) |
 | Vehicle still there | Barrier stays open |
-| One HC-SR04 only (default) | **Never closes by itself.** The manager presses CLOSE GATE, then confirms that the lane is clear |
+| One HC-SR04 only (default), AUTOMATIC mode | **Closes by itself 3 s after the vehicle leaves the 5–10 cm zone** (`AUTO_CLOSE_AFTER_MS`). Set it to 0 to close only with CLOSE GATE |
+| MANUAL mode | Opens and closes only with the website buttons |
 | With the clearance sensor | Closes by itself once that sensor has seen the vehicle pass and the lane has been clear for 2 s |
 | CLOSE pressed while a vehicle is detected | Refused, and the website shows "Refused: a vehicle is at the gate" |
 | Something detected while the barrier is closing | It goes back up |
@@ -235,6 +236,7 @@ Do these with the barrier arm free to move and nothing in its path.
 ## Safety
 
 This is a **prototype for a scale model**. One HC-SR04 does not prove that a vehicle or person has
-cleared the barrier, which is why the gate never closes by itself without the second sensor. Even with
-it, a full-size motorised gate needs certified safety hardware: photocells, safety edges, force-limited
+cleared the barrier: with one sensor the gate closes on a timer (`AUTO_CLOSE_AFTER_MS`) after the vehicle
+leaves the sensor, and it cannot see a vehicle that stops under the barrier. Add the clearance sensor
+(or set the timer to 0 and close by hand) when that matters. Even with it, a full-size motorised gate needs certified safety hardware: photocells, safety edges, force-limited
 drives and a hard-wired emergency stop that cuts motor power.
