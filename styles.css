@@ -511,6 +511,17 @@ button.kpi:hover { border-color: var(--accent); }
 .c-title { text-align: left; font-weight: 500; min-width: 0; overflow-wrap: anywhere; }
 .c-title:hover { color: var(--accent-ink); }
 .trow.is-done .c-title { color: var(--muted); text-decoration: line-through; }
+/* course tag on a task: same colours as the course's classes on the calendar */
+.ctag {
+  display: inline-flex; align-items: center; height: 19px; padding: 0 6px; margin-right: 7px;
+  border-radius: 5px; vertical-align: 1px;
+  font-size: 11px; font-weight: 700; letter-spacing: .02em; white-space: nowrap;
+  background: var(--ns-bg); color: var(--ns-ink);
+}
+.ctag.upl { background: var(--teal-bg); color: var(--teal-ink); }
+.ctag.arc { background: var(--violet-bg); color: var(--violet-ink); }
+.ctag.grad { background: var(--aw-bg); color: var(--aw-ink); }
+.select.course-filter { flex: none; width: auto; max-width: 260px; }
 .c-owner { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12.5px; color: var(--fg-2); }
 .owner-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .c-due { font-size: 12.5px; color: var(--fg-2); font-variant-numeric: tabular-nums; }

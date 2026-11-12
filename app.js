@@ -128,6 +128,7 @@
     drawer: false,
     taskScope: 'mine',
     taskFilter: 'all',
+    taskCourse: 'all',
     reqFilter: 'all',
     search: '',
     week: 0,
@@ -155,6 +156,12 @@
   };
   const STATUS_KEYS = Object.keys(STATUS);
   const PRIORITY = { high: 'High', medium: 'Medium', low: 'Low' };
+  // Courses come from the weekly timetable in data.js; a task can belong to one of them.
+  const COURSES = (D.weeklySchedule || []).reduce((list, c) =>
+    (list.some((x) => x.code === c.code) ? list : list.concat({ code: c.code, title: c.title, kind: c.kind })), []);
+  const isCode = (c) => /\d/.test(c.code); // "UPL437" is a course code, "Studio" is not
+  const courseName = (c) => (isCode(c) ? `${c.code} · ${c.title}` : c.title);
+  const courseOf = (t) => (t.course ? COURSES.find((c) => c.code === t.course) || { code: t.course, title: t.course, kind: '' } : null);
   const REQ_STATUS = {
     'in-progress': { label: 'In Progress', cls: 'ip' },
     awaiting: { label: 'Awaiting Approval', cls: 'aw' },
@@ -205,6 +212,9 @@
 
   const statusPill = (s) => `<span class="pill ${STATUS[s].cls}">${STATUS[s].label}</span>`;
   const prioPill = (p) => `<span class="prio ${p}">${PRIORITY[p]}</span>`;
+  const courseTag = (c) => (c ? `<span class="ctag ${c.kind}" title="${esc(c.title)}">${esc(isCode(c) ? c.code : c.title)}</span>` : '');
+  const courseOpts = (sel, none) => `<option value="">${none}</option>` +
+    COURSES.map((c) => `<option value="${esc(c.code)}"${c.code === sel ? ' selected' : ''}>${esc(courseName(c))}</option>`).join('');
   const reqPill = (s) => `<span class="pill ${REQ_STATUS[s].cls}">${REQ_STATUS[s].label}</span>`;
 
   function progBar(t) {
@@ -270,7 +280,7 @@
     const cls = `trow${t.id === ui.selected ? ' is-sel' : ''}${done ? ' is-done' : ''}`;
     return `<div class="${cls}" role="row" data-action="select-task" data-id="${t.id}">
       <button class="chk${done ? ' on' : ''}" data-action="toggle-done" data-id="${t.id}" aria-label="${done ? 'Reopen' : 'Mark as done'}: ${esc(t.title)}" aria-pressed="${done}">${icon('check')}</button>
-      <button class="c-title" data-action="select-task" data-id="${t.id}">${esc(t.title)}</button>
+      <button class="c-title" data-action="select-task" data-id="${t.id}">${courseTag(courseOf(t))}${esc(t.title)}</button>
       <span class="c-pri">${prioPill(t.priority)}</span>
       <span class="c-owner">${avatar(t.owner)}<span class="owner-name">${esc(person(t.owner).name)}</span></span>
       <span class="c-due${isOverdue(t) ? ' overdue' : ''}"><span class="due-abs">${fmtDate(t.due)}</span><span class="due-rel">${done ? 'Done' : relDue(t.due)}</span></span>
@@ -314,6 +324,7 @@
           <dt>Assignee</dt><dd><span class="sel-wrap">${avatar(t.owner)}${isManager()
             ? `<select class="plain-select" id="f-owner" data-change="owner" data-id="${t.id}" aria-label="Assignee">${staffOpts}</select>`
             : `<b>${esc(person(t.owner).name)}</b>`}</span></dd>
+          <dt>Course</dt><dd><select class="plain-select" id="f-course" data-change="course" data-id="${t.id}" aria-label="Course">${courseOpts(t.course, 'No course')}</select></dd>
           <dt>Priority</dt><dd><select class="pill-select ${t.priority}" id="f-priority" data-change="priority" data-id="${t.id}" aria-label="Priority">${prioOpts}</select></dd>
           <dt>Due Date</dt><dd>${icon('calendar-days')}<span>${fmtDate(t.due)}</span>${isOverdue(t) ? '<span class="pill bad">Overdue</span>' : ''}</dd>
           <dt>Status</dt><dd><select class="pill-select ${STATUS[t.status].cls}" id="f-status" data-change="status" data-id="${t.id}" aria-label="Status">${statusOpts}</select></dd>
@@ -359,7 +370,10 @@
 
   function meetingRow(e) {
     const past = toMin(e.end) <= nowMin();
-    return `<div class="li${past ? ' is-past' : ''}"><span class="li-time">${fmtClock(toMin(e.start))}<small>${fmtClock(toMin(e.end))}</small></span><span class="li-ico tone-${EVENT_TONE[e.kind] || 'ip'}">${icon(eventIcon(e))}</span><span class="li-main"><b>${esc(e.title)}</b><small>${esc(e.place)}</small></span><span></span></div>`;
+    // A class links to the open tasks for its course.
+    const open = e.weekly ? myTasks().filter((t) => isOpen(t) && t.course === e.place).length : 0;
+    const link = open ? `<button class="link" data-action="course-tasks" data-course="${esc(e.place)}">${plural(open, 'task')}</button>` : '';
+    return `<div class="li${past ? ' is-past' : ''}"><span class="li-time">${fmtClock(toMin(e.start))}<small>${fmtClock(toMin(e.end))}</small></span><span class="li-ico tone-${EVENT_TONE[e.kind] || 'ip'}">${icon(eventIcon(e))}</span><span class="li-main"><b>${esc(e.title)}</b><small>${esc(e.place)}</small></span><span>${link}</span></div>`;
   }
 
   function requestRow(r, withActions) {
@@ -429,9 +443,12 @@
 
   function viewTasks() {
     const dept = isManager() && ui.taskScope === 'all';
-    const scope = dept ? state.tasks.slice() : myTasks();
+    const all = dept ? state.tasks.slice() : myTasks();
+    const course = COURSES.some((c) => c.code === ui.taskCourse) ? ui.taskCourse : 'all';
+    const scope = course === 'all' ? all : all.filter((t) => t.course === course);
     const q = ui.search.trim().toLowerCase();
-    const searched = q ? scope.filter((t) => `${t.title} ${person(t.owner).name}`.toLowerCase().includes(q)) : scope;
+    const searchText = (t) => { const c = courseOf(t); return `${t.title} ${person(t.owner).name} ${c ? `${c.code} ${c.title}` : ''}`; };
+    const searched = q ? scope.filter((t) => searchText(t).toLowerCase().includes(q)) : scope;
     const f = TASK_FILTERS.find((x) => x.id === ui.taskFilter) || TASK_FILTERS[0];
     const list = searched.filter(f.test).sort((a, b) =>
       (isOpen(b) - isOpen(a)) || (isOpen(a) ? byDue(a, b) : (b.completedOn || '').localeCompare(a.completedOn || '')));
@@ -442,6 +459,7 @@
         <div class="page-head">
           <div><h1>${dept ? 'Department Tasks' : 'My Tasks'}</h1><p class="sub">${plural(scope.filter(isOpen).length, 'open task')} · ${overdue} overdue</p></div>
           <div class="head-actions">
+            ${COURSES.length ? `<select class="select course-filter" id="f-course-filter" data-ui="task-course" aria-label="Show tasks for a course">${courseOpts(course === 'all' ? '' : course, 'All courses')}</select>` : ''}
             ${isManager() ? `<div class="seg" role="group" aria-label="Whose tasks">
               <button class="${dept ? '' : 'is-on'}" data-action="scope" data-scope="mine" aria-pressed="${!dept}">Mine</button>
               <button class="${dept ? 'is-on' : ''}" data-action="scope" data-scope="all" aria-pressed="${dept}">Department</button>
@@ -1103,7 +1121,10 @@
           <div class="field"><label for="nt-owner">Assign to</label><select class="select" id="nt-owner" name="owner">${staffOpts}</select></div>
           <div class="field"><label for="nt-priority">Priority</label><select class="select" id="nt-priority" name="priority"><option value="high">High</option><option value="medium" selected>Medium</option><option value="low">Low</option></select></div>
         </div>
-        <div class="field"><label for="nt-due">Due date</label><input class="input" type="date" id="nt-due" name="due" value="${TODAY}" required></div>
+        <div class="field-row">
+          ${COURSES.length ? `<div class="field"><label for="nt-course">Course</label><select class="select" id="nt-course" name="course">${courseOpts(ui.view === 'tasks' && ui.taskCourse !== 'all' ? ui.taskCourse : '', 'No course')}</select></div>` : ''}
+          <div class="field"><label for="nt-due">Due date</label><input class="input" type="date" id="nt-due" name="due" value="${TODAY}" required></div>
+        </div>
         <div class="field"><label for="nt-desc">Description</label><textarea class="input textarea" id="nt-desc" name="desc" maxlength="600" placeholder="What needs to be done?"></textarea></div>
         <div class="field"><label for="nt-subs">Subtasks · one per line</label><textarea class="input textarea" id="nt-subs" name="subtasks" maxlength="1000" placeholder="Collect data&#10;Prepare draft"></textarea></div>
         <div class="modal-actions"><button type="button" class="btn btn-ghost" data-action="close-modal">Cancel</button><button class="btn btn-primary">${icon('plus')}Create Task</button></div>
@@ -1307,8 +1328,9 @@
         break;
       case 'close-drawer': ui.drawer = false; $('#app').classList.remove('drawer-open'); break;
       case 'add-file': ui.fileFor = id; $('#file-input').value = ''; $('#file-input').click(); break;
-      case 'kpi': ui.taskScope = 'mine'; ui.taskFilter = el.dataset.filter; go('tasks'); break;
-      case 'team-filter': ui.taskScope = 'all'; ui.taskFilter = el.dataset.filter; go('tasks'); break;
+      case 'kpi': ui.taskScope = 'mine'; ui.taskFilter = el.dataset.filter; ui.taskCourse = 'all'; go('tasks'); break;
+      case 'team-filter': ui.taskScope = 'all'; ui.taskFilter = el.dataset.filter; ui.taskCourse = 'all'; go('tasks'); break;
+      case 'course-tasks': ui.taskScope = 'mine'; ui.taskFilter = 'all'; ui.taskCourse = el.dataset.course; go('tasks'); break;
       case 'task-filter': ui.taskFilter = el.dataset.filter; render(); break;
       case 'scope': ui.taskScope = el.dataset.scope; render(); break;
       case 'req-filter': ui.reqFilter = el.dataset.filter; if (ui.view !== 'requests') go('requests'); else render(); break;
@@ -1398,6 +1420,12 @@
 
   function onChange(e) {
     const el = e.target;
+    if (el.dataset && el.dataset.ui === 'task-course') {
+      ui.taskCourse = el.value || 'all';
+      ui.refocus = el.id;
+      render();
+      return;
+    }
     if (el.id === 'file-input') {
       const t = findTask(ui.fileFor);
       if (!t || !el.files || !el.files.length) return;
@@ -1416,6 +1444,10 @@
       t.owner = el.value;
       logTask(t, `Delegated the task to ${person(el.value).name}`);
       toast(`Delegated to ${person(el.value).name}`);
+    } else if (kind === 'course') {
+      t.course = el.value;
+      const c = courseOf(t);
+      logTask(t, c ? `Linked the task to ${courseName(c)}` : 'Removed the course');
     } else if (kind === 'priority') {
       t.priority = el.value;
       logTask(t, `Changed priority to ${PRIORITY[el.value]}`);
@@ -1455,7 +1487,8 @@
       if (!title) return;
       const t = {
         id: newId('t'), title, priority: data.priority || 'medium', owner: data.owner || ME, by: ME,
-        due: data.due || TODAY, status: 'not-started', desc: String(data.desc || '').trim(),
+        due: data.due || TODAY, course: COURSES.some((c) => c.code === data.course) ? data.course : '',
+        status: 'not-started', desc: String(data.desc || '').trim(),
         subtasks: String(data.subtasks || '').split('\n').map((s) => s.trim()).filter(Boolean).map((s) => ({ t: s, done: false })),
         files: [], comments: [], log: []
       };
@@ -1466,6 +1499,7 @@
       ui.selected = t.id;
       ui.taskFilter = 'all';
       ui.taskScope = 'mine';
+      if (ui.taskCourse !== t.course) ui.taskCourse = 'all'; // keep the new task in view
       save();
       if (ui.view !== 'my-day' && ui.view !== 'tasks') go('tasks'); else render();
     } else if (kind === 'new-request') {
@@ -1802,7 +1836,7 @@
     cloud.account = accountSummary();
     cloud.lastPage = 'my-day';
     track(how && how.startsWith('Created') ? 'account' : 'signin', how || 'Signed in');
-    Object.assign(ui, { view: 'my-day', drawer: false, taskScope: 'mine', taskFilter: 'all', search: '', confirmReset: false });
+    Object.assign(ui, { view: 'my-day', drawer: false, taskScope: 'mine', taskFilter: 'all', taskCourse: 'all', search: '', confirmReset: false });
     ui.selected = selectId || firstOpenTaskId();
     mountApp();
     if (FB) initCloud();
