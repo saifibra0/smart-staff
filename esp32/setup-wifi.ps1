@@ -34,10 +34,15 @@ Write-Host "ESP32 found on $Port" -ForegroundColor Green
 # 2. Choose the Wi-Fi network. The ESP32 can only use 2.4 GHz.
 $nets = [ordered]@{}
 $current = $null
-netsh wlan show networks mode=bssid | ForEach-Object {
-  if ($_ -match '^SSID \d+ : (.*)$') { $current = $Matches[1]; if ($current -and -not $nets.Contains($current)) { $nets[$current] = @() } }
-  elseif ($current -and $_ -match '^\s*Band\s*:\s*(.*)$') { $nets[$current] += $Matches[1].Trim() }
-}
+# Read netsh as UTF-8 so names with symbols (like a curly apostrophe in a phone hotspot name) reach the ESP32 exactly.
+$prevEncoding = [Console]::OutputEncoding
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+try {
+  netsh wlan show networks mode=bssid | ForEach-Object {
+    if ($_ -match '^SSID \d+ : (.*)$') { $current = $Matches[1]; if ($current -and -not $nets.Contains($current)) { $nets[$current] = @() } }
+    elseif ($current -and $_ -match '^\s*Band\s*:\s*(.*)$') { $nets[$current] += $Matches[1].Trim() }
+  }
+} finally { [Console]::OutputEncoding = $prevEncoding }
 $names = @($nets.Keys | Where-Object { $_ -and $_ -ne 'SmartGate-Setup' })
 Write-Host ''
 Write-Host 'Wi-Fi networks this laptop can see:'

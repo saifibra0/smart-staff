@@ -1,16 +1,19 @@
 /*
- * Smart Parking: RFID card setup (Arduino UNO + RC522 reader)
- * ------------------------------------------------------------
- * Registers NFC/RFID cards (13.56 MHz: MIFARE Classic, MIFARE Ultralight, NTAG...) as allowed
- * cards and checks them when they are tapped. Allowed cards are kept in the UNO's EEPROM, so
- * they survive power-off and new uploads.
+ * Smart Parking: RFID card gate (Arduino UNO + RC522 reader + servo)
+ * ------------------------------------------------------------------
+ * A registered card opens the gate: the servo turns smoothly to 90 degrees, stays open for a few
+ * seconds, then closes again. Unknown cards are refused. Registered cards are kept in the UNO's
+ * EEPROM, so they survive power-off and new uploads. Works on its own: no Wi-Fi needed.
  *
- * Library: MFRC522 by GithubCommunity (Arduino IDE: Tools > Manage Libraries > "MFRC522").
- * Board:   Arduino UNO (Tools > Board > Arduino AVR Boards > Arduino Uno).
+ * Libraries: MFRC522 by GithubCommunity (Tools > Manage Libraries > "MFRC522") and Servo (built in).
+ * Board:     Arduino UNO (Tools > Board > Arduino AVR Boards > Arduino Uno).
  *
  * Wiring (RC522 -> UNO):
  *   SDA  -> D10      SCK  -> D13      MOSI -> D11      MISO -> D12
  *   RST  -> D9       GND  -> GND      3.3V -> 3.3V (NOT 5V)      IRQ -> not connected
+ * Servo -> UNO: signal (orange/yellow) -> D3, + (red) -> 5V, - (brown/black) -> GND.
+ *   If the UNO restarts when the servo moves, power the servo from an external 5 V supply instead
+ *   (supply + to servo red, supply - to servo brown AND to a UNO GND pin).
  * Optional: green LED (with 220 ohm) on D7, red LED on D6, buzzer on D5.
  *
  * Use it from the Serial Monitor at 115200 baud (line ending: Newline):
@@ -18,18 +21,28 @@
  *   remove  the next card you tap is removed
  *   list    shows the registered cards
  *   clear   removes all cards
+ *   open    opens the gate once (to test the servo)
+ *   test    checks the RC522 reader
  *   help    shows these commands
- * Tapping a card otherwise prints ACCESS GRANTED or ACCESS DENIED with the card's UID.
+ * Tapping a card otherwise prints ACCESS GRANTED (and opens the gate) or ACCESS DENIED.
  */
 #include <SPI.h>
 #include <MFRC522.h>
 #include <EEPROM.h>
+#include <Servo.h>
 
 const uint8_t PIN_SS = 10;        // RC522 SDA (chip select)
 const uint8_t PIN_RST = 9;        // RC522 RST
 const uint8_t PIN_GREEN = 7;      // optional
 const uint8_t PIN_RED = 6;        // optional
 const uint8_t PIN_BUZZER = 5;     // optional
+const uint8_t PIN_SERVO = 3;      // gate servo signal
+
+// Gate (servo) settings
+const int GATE_CLOSED_DEG = 0;
+const int GATE_OPEN_DEG = 90;
+const unsigned long SERVO_STEP_MS = 8;      // ms per degree: 90 degrees in about 0.7 s
+const unsigned long GATE_OPEN_MS = 5000;    // how long the gate stays open after a card
 
 const uint8_t MAX_CARDS = 20;
 const uint8_t UID_MAX = 10;       // RC522 UIDs are 4, 7 or 10 bytes
@@ -41,6 +54,7 @@ const unsigned long WAIT_MS = 15000;                            // how long add/
 const byte READER_GAIN = MFRC522::RxGain_min;
 
 MFRC522 reader(PIN_SS, PIN_RST);
+Servo gateServo;
 
 enum Mode : uint8_t { NORMAL, ADDING, REMOVING };
 Mode mode = NORMAL;
@@ -106,18 +120,60 @@ void listCards() {
   for (uint8_t i = 0; i < n; i++) { Serial.print(F("[rfid]   ")); Serial.print(i + 1); Serial.print(F(") ")); Serial.println(storedUid(i)); }
 }
 
-/* ---------------------------------------------------------------- feedback */
+/* ---------------------------------------------------------------- gate (servo), moved without blocking */
+
+int gateAngle = GATE_CLOSED_DEG, gateTarget = GATE_CLOSED_DEG, moveFrom = GATE_CLOSED_DEG;
+unsigned long moveStartMs = 0, closeAtMs = 0;
+
+void moveGateTo(int target) {
+  if (target == gateTarget) return;
+  moveFrom = gateAngle;
+  gateTarget = target;
+  moveStartMs = millis();
+  Serial.println(target == GATE_OPEN_DEG ? F("[gate] opening") : F("[gate] closing"));
+}
+
+void openGate() {
+  closeAtMs = millis() + abs(GATE_OPEN_DEG - gateAngle) * SERVO_STEP_MS + GATE_OPEN_MS;   // another card keeps it open longer
+  moveGateTo(GATE_OPEN_DEG);
+}
+
+// Called every loop: moves 1 degree per SERVO_STEP_MS, timed by the clock, and closes when the time is up.
+void updateGate() {
+  unsigned long now = millis();
+  if (gateAngle != gateTarget) {
+    int span = abs(gateTarget - moveFrom);
+    int done = min((long)((now - moveStartMs) / SERVO_STEP_MS), (long)span);
+    int next = moveFrom + (gateTarget > moveFrom ? done : -done);
+    if (next != gateAngle) {
+      gateAngle = next;
+      gateServo.write(gateAngle);
+      if (gateAngle == gateTarget) Serial.println(gateAngle == GATE_OPEN_DEG ? F("[gate] open") : F("[gate] closed"));
+    }
+  }
+  if (gateTarget == GATE_OPEN_DEG && gateAngle == GATE_OPEN_DEG && (long)(now - closeAtMs) >= 0) moveGateTo(GATE_CLOSED_DEG);
+}
+
+/* ---------------------------------------------------------------- feedback (LEDs and buzzer, without blocking) */
+
+unsigned long ledOffAtMs = 0;
 
 void signal(bool ok) {
   digitalWrite(ok ? PIN_GREEN : PIN_RED, HIGH);
   if (ok) tone(PIN_BUZZER, 2000, 120); else tone(PIN_BUZZER, 400, 400);
-  delay(ok ? 400 : 600);
-  digitalWrite(PIN_GREEN, LOW);
-  digitalWrite(PIN_RED, LOW);
+  ledOffAtMs = millis() + (ok ? 400 : 600);
+}
+
+void updateLeds() {
+  if (ledOffAtMs && (long)(millis() - ledOffAtMs) >= 0) {
+    digitalWrite(PIN_GREEN, LOW);
+    digitalWrite(PIN_RED, LOW);
+    ledOffAtMs = 0;
+  }
 }
 
 void help() {
-  Serial.println(F("[rfid] commands: add | remove | list | clear | help  (Serial Monitor at 115200, line ending: Newline)"));
+  Serial.println(F("[rfid] commands: add | remove | list | clear | open | test | help  (Serial Monitor at 115200, line ending: Newline)"));
 }
 
 // "test": checks the reader step by step. Hold a card on the reader while it runs.
@@ -173,12 +229,14 @@ void setup() {
   pinMode(PIN_GREEN, OUTPUT);
   pinMode(PIN_RED, OUTPUT);
   pinMode(PIN_BUZZER, OUTPUT);
+  gateServo.attach(PIN_SERVO);
+  gateServo.write(GATE_CLOSED_DEG);   // start with the gate closed
   SPI.begin();
   reader.PCD_Init();
   delay(50);
   reader.PCD_SetAntennaGain(READER_GAIN);
   Serial.println();
-  Serial.println(F("Smart Parking RFID card setup (UNO + RC522)"));
+  Serial.println(F("Smart Parking RFID card gate (UNO + RC522 + servo on D3)"));
 
   byte version = reader.PCD_ReadRegister(MFRC522::VersionReg);
   if (version == 0x00 || version == 0xFF) {
@@ -206,6 +264,8 @@ void handleCommand(String cmd) {
   } else if (cmd == "clear") {
     EEPROM.update(EE_COUNT, 0);
     Serial.println(F("[rfid] all cards removed"));
+  } else if (cmd == "open") {
+    openGate();
   } else if (cmd == "test") {
     readerTest();
   } else if (cmd == "help") {
@@ -217,6 +277,9 @@ void handleCommand(String cmd) {
 }
 
 void loop() {
+  updateGate();
+  updateLeds();
+
   // Commands from the Serial Monitor (or the laptop).
   static String line;
   while (Serial.available()) {
@@ -266,6 +329,7 @@ void loop() {
     bool ok = slot >= 0;
     Serial.println(ok ? F(" -> ACCESS GRANTED") : F(" -> ACCESS DENIED (not registered)"));
     signal(ok);
+    if (ok) openGate();
   }
 
   reader.PICC_HaltA();
