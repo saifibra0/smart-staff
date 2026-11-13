@@ -14,6 +14,8 @@
  * Servo -> UNO: signal (orange/yellow) -> D3, + (red) -> 5V, - (brown/black) -> GND.
  *   If the UNO restarts when the servo moves, power the servo from an external 5 V supply instead
  *   (supply + to servo red, supply - to servo brown AND to a UNO GND pin).
+ * Home button (360-degree servo): a push button between D2 and GND, placed where the arm presses it
+ *   when the gate is closed (0 degrees). On a 4-leg button use two legs at opposite corners.
  * Optional: green LED (with 220 ohm) on D7, red LED on D6, buzzer on D5.
  *
  * Use it from the Serial Monitor at 115200 baud (line ending: Newline):
@@ -22,18 +24,21 @@
  *   list    shows the registered cards
  *   clear   removes all cards
  *   open    opens the gate once (to test the servo)
+ *   closeangle 5 / openangle 95   (180-degree servo) fine-tune the closed / open angle until the next upload
  *   test    checks the RC522 reader
  *   help    shows these commands
  * Tapping a card otherwise prints ACCESS GRANTED (and opens the gate) or ACCESS DENIED.
  *
  * "360 degree" (continuous-rotation) servos, CONTINUOUS_SERVO 1: they can't be sent to an angle, only
- * told to turn, so 90 degrees = turning for TURN_90_MS and back. Put the arm at the closed spot before
- * power-on. To find the time:
+ * told to turn, so opening = turning forward for TURN_90_MS. Closing turns back until the arm presses
+ * the home button and stops right there, so 0 degrees is exact every time (HOME_BUTTON 1). At power-on
+ * the arm turns back slowly to the button. Without a button (HOME_BUTTON 0) it closes by time and can
+ * end a few degrees off. Serial commands:
  *   fwd 400 / back 400   turn forward / back for 400 ms
- *   turn90 400           use 400 ms for the gate until the next upload (then set TURN_90_MS)
+ *   turn90 400           use 400 ms for opening until the next upload (then set TURN_90_MS)
+ *   home                 turn back slowly to the home button
  *   stop                 stop; the arm's position now counts as closed
- * The arm can drift a little over many openings; nudge it back with fwd/back + stop. A normal 180-degree
- * servo (CONTINUOUS_SERVO 0) goes to exactly 0 and 90 degrees every time.
+ * A normal 180-degree servo (CONTINUOUS_SERVO 0) goes to exactly 0 and 90 degrees with no button.
  */
 #include <SPI.h>
 #include <MFRC522.h>
@@ -50,20 +55,31 @@ const uint8_t PIN_SERVO = 3;      // gate servo signal
 // Gate (servo) settings
 // Which servo is it? 1 = "360 degree" continuous-rotation servo (it can only be told a speed and a
 // direction, not an angle), 0 = normal 180-degree servo (goes exactly to the angles below).
-#define CONTINUOUS_SERVO 1
+#define CONTINUOUS_SERVO 0                  // 2026-11-13: switched to a normal 180-degree servo
 const unsigned long GATE_OPEN_MS = 5000;    // how long the gate stays open after a card
 
-// Normal 180-degree servo
-const int GATE_CLOSED_DEG = 0;
-const int GATE_OPEN_DEG = 90;
+// Normal 180-degree servo. If the closed arm isn't exactly level, try "closeangle 5" (or re-seat the
+// horn one tooth on the shaft), then put the value that looks right here.
+int GATE_CLOSED_DEG = 0;
+int GATE_OPEN_DEG = 90;
 const unsigned long SERVO_STEP_MS = 8;      // ms per degree: 90 degrees in about 0.7 s
 
-// 360-degree servo: open = turn one way for TURN_90_MS, then stop; close = turn back for the same time.
-// Find the right time with the "fwd 250" / "back 250" commands (milliseconds), then set it here.
+// 360-degree servo: open = turn one way for TURN_90_MS, then stop; close = turn back until the arm
+// presses the home button (without a button: turn back for the same time).
+// Find the right time with the "fwd 400" / "back 400" commands (milliseconds), then set it here.
 const int SERVO_STOP_US = 1500;             // pulse that means "stop"
 const int SERVO_SPEED_US = 200;             // 1500 +/- 200 us = medium speed
 unsigned long TURN_90_MS = 400;             // how long a quarter turn (90 degrees) takes (measured 2026-11-13)
 const int OPEN_DIRECTION = 1;               // -1 if the arm opens the wrong way
+
+// Home button: a push button placed where the closed arm presses it. Closing turns back fast, then
+// slowly, and stops the moment the button is pressed, so the gate closes at exactly 0 degrees every time.
+#define HOME_BUTTON 1                       // 0 = no button: close by time only (can end a few degrees off)
+const uint8_t PIN_HOME = 2;                 // button between D2 and GND (D2 is an interrupt pin: instant stop)
+const int SERVO_SLOW_US = 100;              // 1500 +/- 100 us = slow, for the last part of closing
+const unsigned long CLOSE_FAST_PERCENT = 60;  // close fast for 60% of TURN_90_MS, then slowly to the button
+const unsigned long HOME_TIMEOUT_MS = 800;    // stop if the slow part hasn't reached the button by then
+// (if that happens, the gate closes by time until the button is seen working again)
 
 const uint8_t MAX_CARDS = 20;
 const uint8_t UID_MAX = 10;       // RC522 UIDs are 4, 7 or 10 bytes
@@ -146,30 +162,103 @@ void listCards() {
 #if CONTINUOUS_SERVO
 
 // The servo turns only while it gets a signal; between moves the signal is switched off, so it
-// cannot creep. Opening while it is still closing turns back for the time it already ran.
-enum GateState : uint8_t { G_CLOSED, G_OPENING, G_OPEN, G_CLOSING, G_TEST };
+// cannot creep. With the home button every close ends exactly on the button (0 degrees), so the
+// small error of a timed turn never adds up. Opening while it is still closing turns back up.
+enum GateState : uint8_t { G_CLOSED, G_OPENING, G_OPEN, G_CLOSING, G_HOMING, G_TEST };
 GateState gateState = G_CLOSED;
-unsigned long runStartMs = 0, runEndMs = 0, closeAtMs = 0;
+unsigned long runStartMs = 0, runEndMs = 0, closeAtMs = 0, closeStartMs = 0;
+volatile bool homeWatch = false;    // stop as soon as the home button is pressed
+volatile bool homeHit = false;      // the home button stopped the servo
+bool homeMissing = false;           // the arm didn't reach the button last time: close by time instead
+bool homeShown = false;             // last button state printed
+unsigned long homeChangeMs = 0;
 
-void runServo(int direction, unsigned long ms) {
+bool homePressed() {
+#if HOME_BUTTON
+  return digitalRead(PIN_HOME) == LOW;
+#else
+  return false;
+#endif
+}
+
+// Runs the instant the arm presses the button (interrupt on D2): the servo's next pulse is "stop".
+void onHomePressed() {
+  if (homeWatch) { gateServo.writeMicroseconds(SERVO_STOP_US); homeWatch = false; homeHit = true; }
+}
+
+void runServo(int direction, int speedUs, unsigned long ms) {
   if (!gateServo.attached()) gateServo.attach(PIN_SERVO);
-  gateServo.writeMicroseconds(SERVO_STOP_US + direction * OPEN_DIRECTION * SERVO_SPEED_US);
+  gateServo.writeMicroseconds(SERVO_STOP_US + direction * OPEN_DIRECTION * speedUs);
   runStartMs = millis();
   runEndMs = runStartMs + ms;
 }
 
 void stopServo() {
+  homeWatch = false;
   gateServo.writeMicroseconds(SERVO_STOP_US);
   delay(20);
-  gateServo.detach();
+  // Switch the signal off between two pulses. Cutting a pulse short makes the servo jump, and
+  // detaching in the middle of one can leave the pin stuck on.
+  for (;;) {
+    noInterrupts();
+    if (digitalRead(PIN_SERVO) == LOW) { gateServo.detach(); interrupts(); break; }
+    interrupts();
+  }
+}
+
+// Turn back slowly until the arm presses the button (at power-on, and the "home" command).
+void startHoming() {
+  if (homePressed()) { stopServo(); gateState = G_CLOSED; Serial.println(F("[gate] closed: the arm is on the home button (0 degrees)")); return; }
+  homeHit = false;
+  homeWatch = true;
+  runServo(-1, SERVO_SLOW_US, HOME_TIMEOUT_MS);
+  gateState = G_HOMING;
+}
+
+// Close: back fast for most of the way, then slowly until the arm presses the button.
+// If the button wasn't found last time, turn back for the opening time instead (still stopping if it's pressed).
+void startClosing() {
+  closeStartMs = millis();
+#if HOME_BUTTON
+  if (homePressed()) { gateState = G_CLOSED; Serial.println(F("[gate] closed (the button was already pressed)")); return; }
+  homeHit = false;
+  homeWatch = true;
+  runServo(-1, SERVO_SPEED_US, homeMissing ? TURN_90_MS : TURN_90_MS * CLOSE_FAST_PERCENT / 100);
+#else
+  runServo(-1, SERVO_SPEED_US, TURN_90_MS);
+#endif
+  gateState = G_CLOSING;
+  Serial.println(homeMissing ? F("[gate] closing (by time: home button not found)") : F("[gate] closing"));
+}
+
+// Report every press and release of the home button (and beep on a press), so the wiring is easy to check.
+void watchHomeButton(unsigned long now) {
+#if HOME_BUTTON
+  bool pressed = homePressed();
+  if (pressed == homeShown || now - homeChangeMs < 30) return;
+  homeShown = pressed;
+  homeChangeMs = now;
+  Serial.println(pressed ? F("[gate] home button pressed") : F("[gate] home button released"));
+  if (pressed) {
+    tone(PIN_BUZZER, 3000, 60);
+    if (homeMissing) { homeMissing = false; Serial.println(F("[gate] home button works: closing will stop on it again")); }
+  }
+#endif
 }
 
 void openGate() {
   closeAtMs = millis() + TURN_90_MS + GATE_OPEN_MS;   // another card keeps it open longer
-  if (gateState == G_CLOSED) { runServo(+1, TURN_90_MS); gateState = G_OPENING; Serial.println(F("[gate] opening")); }
-  else if (gateState == G_CLOSING) {                    // go back up for as long as it already went down
+  if (gateState == G_CLOSED) {
+    homeWatch = false;
+    runServo(+1, SERVO_SPEED_US, TURN_90_MS);
+    gateState = G_OPENING;
+    Serial.println(F("[gate] opening"));
+  } else if (gateState == G_CLOSING || gateState == G_HOMING) {   // go back up about as far as it came down
     unsigned long ran = millis() - runStartMs;
-    runServo(+1, ran);
+    unsigned long up = gateState == G_CLOSING ? ran
+                     : TURN_90_MS * CLOSE_FAST_PERCENT / 100 + ran * SERVO_SLOW_US / SERVO_SPEED_US;
+    homeWatch = false;
+    runServo(+1, SERVO_SPEED_US, min(up, TURN_90_MS));
     gateState = G_OPENING;
     Serial.println(F("[gate] opening again"));
   }
@@ -177,22 +266,39 @@ void openGate() {
 
 void updateGate() {
   unsigned long now = millis();
-  if ((gateState == G_OPENING || gateState == G_CLOSING || gateState == G_TEST) && (long)(now - runEndMs) >= 0) {
+  if (homeWatch && homePressed()) { noInterrupts(); onHomePressed(); interrupts(); }   // in case the edge was missed
+  watchHomeButton(now);
+  if (homeHit) {                                       // the arm pressed the button: exactly 0 degrees
+    homeHit = false;
+    stopServo();
+    gateState = G_CLOSED;
+    Serial.print(F("[gate] closed on the home button (0 degrees, ")); Serial.print(now - closeStartMs); Serial.println(F(" ms)"));
+    return;
+  }
+  if ((gateState == G_OPENING || gateState == G_CLOSING || gateState == G_HOMING || gateState == G_TEST) && (long)(now - runEndMs) >= 0) {
+    if (gateState == G_CLOSING && HOME_BUTTON && !homeMissing) {   // fast part done: go on slowly to the button
+      runServo(-1, SERVO_SLOW_US, HOME_TIMEOUT_MS);
+      gateState = G_HOMING;
+      return;
+    }
     stopServo();
     if (gateState == G_OPENING) { gateState = G_OPEN; Serial.println(F("[gate] open")); }
     else if (gateState == G_CLOSING) { gateState = G_CLOSED; Serial.println(F("[gate] closed")); }
+    else if (gateState == G_HOMING) {
+      gateState = G_CLOSED;
+      homeMissing = true;
+      Serial.print(F("[gate] WARNING: stopped after ")); Serial.print(now - closeStartMs);
+      Serial.println(F(" ms without reaching the home button, so the gate closes by time for now. Check the button is on pin 2 and GND where the closed arm presses it (it beeps when pressed), then type 'home'."));
+    }
     else { gateState = G_CLOSED; Serial.println(F("[gate] test turn done")); }
   }
-  if (gateState == G_OPEN && (long)(now - closeAtMs) >= 0) {
-    runServo(-1, TURN_90_MS);
-    gateState = G_CLOSING;
-    Serial.println(F("[gate] closing"));
-  }
+  if (gateState == G_OPEN && (long)(now - closeAtMs) >= 0) startClosing();
 }
 
-// "fwd 250" / "back 250": turn for that many ms, to find how long 90 degrees takes.
+// "fwd 400" / "back 400": turn for that many ms, to find how long 90 degrees takes.
 void testTurn(int direction, unsigned long ms) {
-  runServo(direction, ms);
+  homeWatch = false;
+  runServo(direction, SERVO_SPEED_US, ms);
   gateState = G_TEST;
   Serial.print(F("[gate] test turn ")); Serial.print(direction > 0 ? F("forward ") : F("back ")); Serial.print(ms); Serial.println(F(" ms"));
 }
@@ -255,6 +361,13 @@ void help() {
   Serial.println(F("[rfid] commands: add | remove | list | clear | open | test | help  (Serial Monitor at 115200, line ending: Newline)"));
 #if CONTINUOUS_SERVO
   Serial.println(F("[gate] 360-degree servo: fwd <ms> | back <ms> | turn90 <ms> | stop  (to find the time of a 90 degree turn)"));
+#if HOME_BUTTON
+  Serial.print(F("[gate] home button on D2: ")); Serial.print(homePressed() ? F("pressed") : F("not pressed"));
+  Serial.println(F("  (type 'home' to turn back to it)"));
+#endif
+#else
+  Serial.print(F("[gate] 180-degree servo: closed ")); Serial.print(GATE_CLOSED_DEG); Serial.print(F(" deg, open "));
+  Serial.print(GATE_OPEN_DEG); Serial.println(F(" deg. Fine-tune with closeangle <deg> | openangle <deg>"));
 #endif
 }
 
@@ -314,6 +427,10 @@ void setup() {
 #if CONTINUOUS_SERVO
   pinMode(PIN_SERVO, OUTPUT);          // no signal = the 360-degree servo stays still
   digitalWrite(PIN_SERVO, LOW);
+#if HOME_BUTTON
+  pinMode(PIN_HOME, INPUT_PULLUP);     // pressed = LOW
+  attachInterrupt(digitalPinToInterrupt(PIN_HOME), onHomePressed, FALLING);
+#endif
 #else
   gateServo.attach(PIN_SERVO);
   gateServo.write(GATE_CLOSED_DEG);   // start with the gate closed
@@ -335,6 +452,11 @@ void setup() {
   listCards();
   if (!cardCount()) Serial.println(F("[rfid] no cards yet: type 'add' and tap your card to register it"));
   help();
+#if CONTINUOUS_SERVO && HOME_BUTTON
+  if (!homePressed()) Serial.println(F("[gate] finding 0 degrees: turning back slowly to the home button"));
+  closeStartMs = millis();
+  startHoming();                       // start every power-on at exactly 0 degrees
+#endif
 }
 
 void handleCommand(String cmd) {
@@ -366,6 +488,28 @@ void handleCommand(String cmd) {
     stopServo();
     gateState = G_CLOSED;               // wherever the arm is now counts as closed
     Serial.println(F("[gate] stopped (this position now counts as closed)"));
+#if HOME_BUTTON
+  } else if (cmd == "home") {
+    stopServo();
+    closeStartMs = millis();
+    Serial.println(F("[gate] turning back slowly to the home button"));
+    startHoming();
+#endif
+#else
+  } else if (cmd.startsWith("closeangle ") || cmd.startsWith("openangle ")) {
+    // Fine-tune an angle until the next upload; the arm moves there right away if it's at that end.
+    bool closing = cmd.startsWith("close");
+    int deg = cmd.substring(cmd.indexOf(' ') + 1).toInt();
+    if (deg < 0 || deg > 180 || cmd.substring(cmd.indexOf(' ') + 1).length() == 0) {
+      Serial.println(F("[gate] use an angle from 0 to 180, e.g. closeangle 5"));
+    } else {
+      int &setting = closing ? GATE_CLOSED_DEG : GATE_OPEN_DEG;
+      bool atThatEnd = gateTarget == setting;
+      setting = deg;
+      if (atThatEnd) moveGateTo(deg);
+      Serial.print(closing ? F("[gate] closed angle = ") : F("[gate] open angle = ")); Serial.print(deg);
+      Serial.println(F(" deg (until the next upload)"));
+    }
 #endif
   } else if (cmd == "test") {
     readerTest();
