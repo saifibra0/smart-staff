@@ -49,6 +49,8 @@ not be opened to the internet. Both sides talk to Firebase instead, over HTTPS:
 | ESP32 **GND** | GND rail | **Common ground**: required |
 | Capacitor | + leg to +5 V rail, − leg to GND rail | Stops the ESP32 resetting when the servo starts |
 | ESP32 | USB from your PC | Power and upload |
+| **Red LED** (barrier down) | ESP32 **GPIO 22** (D22) → 220 Ω → long leg; short leg → GND | Firmware 1.7.3+. Blinks fast on E-STOP |
+| **Green LED** (barrier up) | ESP32 **GPIO 21** (D21) → 220 Ω → long leg; short leg → GND | Firmware 1.7.3+. Never use GPIO 6–11 (flash chip) |
 | *Optional* clearance HC-SR04 | TRIG → GPIO 32, ECHO → 1 kΩ/2 kΩ → GPIO 33 | Set `CLEAR_SENSOR_ENABLED 1` |
 | *Optional* stop button | GPIO 25 → button → GND | Set `ESTOP_BUTTON_ENABLED 1` |
 

@@ -1516,6 +1516,7 @@
               <tr><td>RC522 → Arduino UNO SDA · SCK · MOSI · MISO · RST</td><td>D10 · D13 · D11 · D12 · D9</td></tr>
               <tr><td>RC522 3.3V · GND</td><td>UNO 3.3V (never 5 V) · GND</td></tr>
               <tr><td>Card gate servo (UNO)</td><td>Signal D3 · 5V · GND</td></tr>
+              <tr><td>Red LED (barrier down) · Green LED (barrier up)</td><td>GPIO 22 · GPIO 21, each via 220 Ω to GND</td></tr>
             </tbody></table>
             ${mgr && m.src !== 'live' ? `<ol class="gsteps">
               <li>Wire the ESP32 as shown above.</li>

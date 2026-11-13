@@ -62,7 +62,7 @@
 #undef DEVICE_EMAIL
 #define DEVICE_EMAIL "gate-esp32-2@smart-staff.iot"
 
-static const char *FW_VERSION = "1.7.2";
+static const char *FW_VERSION = "1.7.3";
 
 /* ================================================================ settings: setup page first, then secrets.h */
 
@@ -1411,6 +1411,13 @@ void setup() {
   Serial.printf("\nSmart Parking entrance gate, firmware %s\n", FW_VERSION);
 
   pinMode(PIN_STATUS_LED, OUTPUT);
+#if GATE_LIGHTS_ENABLED
+  pinMode(PIN_LIGHT_GREEN, OUTPUT);
+  pinMode(PIN_LIGHT_RED, OUTPUT);
+  digitalWrite(PIN_LIGHT_GREEN, LOW);
+  digitalWrite(PIN_LIGHT_RED, HIGH);   // the barrier starts down
+  Serial.printf("[lights] red LED on GPIO %d, green LED on GPIO %d\n", PIN_LIGHT_RED, PIN_LIGHT_GREEN);
+#endif
 #if ESTOP_BUTTON_ENABLED
   pinMode(PIN_ESTOP_BUTTON, INPUT_PULLUP);
 #endif
@@ -1518,6 +1525,12 @@ void loop() {
   //    fast blink = emergency stop.
   bool led = gate.estop ? (now / 100) % 2 : netLevel == 2 ? true : setupActive ? (now % 1500) < 150 : (now / 500) % 2;
   digitalWrite(PIN_STATUS_LED, led);
+#if GATE_LIGHTS_ENABLED
+  // 6. Traffic light: green while the barrier is up or going up, red otherwise; red blinks on E-STOP.
+  bool up = !gate.estop && (gate.state == G_OPEN || gate.state == G_OPENING);
+  digitalWrite(PIN_LIGHT_GREEN, up);
+  digitalWrite(PIN_LIGHT_RED, gate.estop ? (now / 100) % 2 : !up);
+#endif
 
   delay(1);
 }

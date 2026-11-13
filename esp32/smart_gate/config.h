@@ -9,6 +9,13 @@
 #define PIN_SERVO         18   // servo signal (orange/yellow wire)
 #define PIN_STATUS_LED     2   // on-board blue LED on most DevKit boards
 
+// Gate traffic light: two LEDs, each from its pin through a 220-330 ohm resistor to the LED's long leg,
+// short leg to GND. Red while the barrier is down (or closing), green while it is up (or opening),
+// red blinking fast during an emergency stop. GPIO 6-11 can never be used: they belong to the flash chip.
+#define GATE_LIGHTS_ENABLED 1
+#define PIN_LIGHT_GREEN   21   // board label D21
+#define PIN_LIGHT_RED     22   // board label D22
+
 // Optional second HC-SR04 that looks across the lane just AFTER the barrier.
 // Only with this sensor will the gate close by itself. Set to 1 when it is wired.
 #define CLEAR_SENSOR_ENABLED 0
