@@ -62,7 +62,7 @@
 #undef DEVICE_EMAIL
 #define DEVICE_EMAIL "gate-esp32-2@smart-staff.iot"
 
-static const char *FW_VERSION = "1.7.3";
+static const char *FW_VERSION = "1.8.0";
 
 /* ================================================================ settings: setup page first, then secrets.h */
 
@@ -259,6 +259,30 @@ static void setNote(const char *msg) {
   Serial.printf("[gate] %s\n", gate.note);
 }
 
+// ---------------------------------------------------------------- entrance records
+// Every gate event is queued here and saved by the network task in Firebase /gate/log, which the
+// website lists under Entrance Records. While offline up to LOG_QUEUE_LEN events wait; when the queue
+// is full the oldest is dropped. type: open, close, mode, estop, reset, refused, fault, ok, card, boot.
+#define LOG_QUEUE_LEN 24
+static QueueHandle_t logQueue = nullptr;
+static void logEvent(const char *type, const char *fmt, ...) {
+  LogEvent e;
+  memset(&e, 0, sizeof(e));
+  e.ms = millis();
+  strncpy(e.type, type, sizeof(e.type) - 1);
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(e.text, sizeof(e.text), fmt, ap);
+  va_end(ap);
+  Serial.printf("[log] %s: %s\n", e.type, e.text);
+  if (!logQueue) return;
+  if (xQueueSend(logQueue, &e, 0) != pdTRUE) {
+    LogEvent oldest;
+    xQueueReceive(logQueue, &oldest, 0);
+    xQueueSend(logQueue, &e, 0);
+  }
+}
+
 // Anything within the detection distance, even closer than the zone, blocks closing.
 static bool somethingClose() { return !isnan(entrance.cm) && entrance.cm <= DETECT_CM; }
 
@@ -272,7 +296,11 @@ static bool laneBlocked() {
 
 void startOpening(const char *why) {
   if (gate.estop) return;
-  if (gate.target != SERVO_OPEN_DEG) { gate.moveStartMs = millis(); gate.moveFromAngle = gate.angle; gate.slowestLoopMs = 0; }
+  if (gate.target != SERVO_OPEN_DEG) {
+    gate.moveStartMs = millis(); gate.moveFromAngle = gate.angle; gate.slowestLoopMs = 0;
+    if (strstr(why, "vehicle") && !isnan(entrance.cm)) logEvent("open", "%s (%.1f cm)", why, entrance.cm);
+    else logEvent("open", "%s", why);
+  }
   gate.target = SERVO_OPEN_DEG;
   gate.state = gate.angle == SERVO_OPEN_DEG ? G_OPEN : G_OPENING;
   gate.passSeen = false;
@@ -290,7 +318,10 @@ bool startClosing(const char *why, const char **err) {
   if (clearance.fault) { *err = "clearance sensor is not answering"; return false; }
   if (laneBusy.on) { *err = "a vehicle is in the lane"; return false; }
 #endif
-  if (gate.target != SERVO_CLOSED_DEG) { gate.moveStartMs = millis(); gate.moveFromAngle = gate.angle; gate.slowestLoopMs = 0; }
+  if (gate.target != SERVO_CLOSED_DEG) {
+    gate.moveStartMs = millis(); gate.moveFromAngle = gate.angle; gate.slowestLoopMs = 0;
+    logEvent("close", "%s", why);
+  }
   gate.target = SERVO_CLOSED_DEG;
   gate.state = gate.angle == SERVO_CLOSED_DEG ? G_CLOSED : G_CLOSING;
   setNote(why);
@@ -298,6 +329,7 @@ bool startClosing(const char *why, const char **err) {
 }
 
 void emergencyStop(const char *why) {
+  if (!gate.estop) logEvent("estop", "%s", why);
   gate.estop = true;
   gate.target = gate.angle;     // hold the barrier exactly where it is
   gate.state = G_STOPPED;
@@ -305,6 +337,7 @@ void emergencyStop(const char *why) {
 }
 
 void resetStop() {
+  logEvent("reset", "Emergency stop released");
   gate.estop = false;
   gate.target = gate.angle;
   gate.state = gate.angle == SERVO_OPEN_DEG ? G_OPEN : gate.angle == SERVO_CLOSED_DEG ? G_CLOSED : G_STOPPED;
@@ -313,6 +346,12 @@ void resetStop() {
 
 void gateUpdate(uint32_t nowMs) {
   static uint32_t lastUpdateMs = 0;
+  static bool faultWas = false;
+  if (entrance.fault != faultWas) {
+    faultWas = entrance.fault;
+    if (faultWas) logEvent("fault", "Entrance sensor (HC-SR04) is not answering");
+    else logEvent("ok", "Entrance sensor (HC-SR04) is working again");
+  }
   if (gate.angle != gate.target && lastUpdateMs && nowMs - lastUpdateMs > gate.slowestLoopMs) gate.slowestLoopMs = nowMs - lastUpdateMs;
   lastUpdateMs = nowMs;
   if (!gate.estop) {
@@ -398,14 +437,21 @@ void runCommand(const Command &c) {
   const char *err = nullptr;
   switch (c.action) {
     case A_OPEN:
-      if (gate.estop) strcpy(result, "refused: emergency stop is on");
+      if (gate.estop) { strcpy(result, "refused: emergency stop is on"); logEvent("refused", "Open from the website refused: emergency stop is on"); }
       else startOpening("Opened from the website");
       break;
     case A_CLOSE:
-      if (!startClosing("Closing from the website", &err)) snprintf(result, sizeof(result), "refused: %s", err);
+      if (!startClosing("Closed from the website", &err)) {
+        snprintf(result, sizeof(result), "refused: %s", err);
+        logEvent("refused", "Close from the website refused: %s", err);
+      }
       break;
-    case A_AUTO: gate.mode = M_AUTO; setNote("Automatic mode"); break;
-    case A_MANUAL: gate.mode = M_MANUAL; setNote("Manual mode"); break;
+    case A_AUTO:
+      if (gate.mode != M_AUTO) logEvent("mode", "Automatic mode on (from the website)");
+      gate.mode = M_AUTO; setNote("Automatic mode"); break;
+    case A_MANUAL:
+      if (gate.mode != M_MANUAL) logEvent("mode", "Manual mode on (from the website)");
+      gate.mode = M_MANUAL; setNote("Manual mode"); break;
     case A_ESTOP: emergencyStop("Emergency stop from the website"); break;
     case A_RESET:
       if (gate.estop) resetStop();
@@ -512,6 +558,8 @@ static void onCard(const char *uid) {
     startOpening(why);
   }
   Serial.printf("[card] %s %s -> %s\n", uid, name[0] ? name : "(not registered)", result);
+  logEvent("card", "Card %s%s%s: %s", name[0] ? name : uid, name[0] ? " " : "", name[0] ? uid : "",
+           !strcmp(result, "granted") ? "access granted" : !strcmp(result, "estop") ? "refused (emergency stop)" : "access denied");
   portENTER_CRITICAL(&shareMux);
   strncpy(cardEvent.uid, uid, sizeof(cardEvent.uid) - 1);
   strncpy(cardEvent.name, name, sizeof(cardEvent.name) - 1);
@@ -984,6 +1032,23 @@ static void syncCards() {
 
 // Reports the last tap to /gate/lastCard, once per tap.
 static uint32_t sentCardSeq = 0;
+// Saves the oldest waiting entrance record in /gate/log (one per pass). "ago" lets the website show
+// when it happened, even if it waited while offline. A failed save is retried; one the rules refuse is dropped.
+static void maybeSendLog() {
+  static uint32_t retryAtMs = 0;
+  LogEvent e;
+  if (!logQueue || (int32_t)(millis() - retryAtMs) < 0 || xQueuePeek(logQueue, &e, 0) != pdTRUE) return;
+  uint32_t ago = min(millis() - e.ms, (uint32_t)86400000UL);
+  String body = String("{\"at\":{\".sv\":\"timestamp\"},\"ago\":") + String(ago) + ",\"src\":\"esp32\",\"type\":\"" + e.type +
+                "\",\"text\":\"" + jsonEscape(e.text) + "\"}";
+  String reply;
+  int code = httpCall(dbHttp, dbTls, "POST", dbUrl("/gate/log") + "&print=silent", body, reply);
+  if (code >= 200 && code < 300) { xQueueReceive(logQueue, &e, 0); return; }
+  Serial.printf("[log] could not save a record (HTTP %d) %s\n", code, reply.c_str());
+  if (code == 400 || code == 401 || code == 403) xQueueReceive(logQueue, &e, 0);
+  else retryAtMs = millis() + 5000;
+}
+
 static void maybeSendCard() {
   if (cardEventSeq == sentCardSeq) return;
   CardEvent e;
@@ -1081,6 +1146,7 @@ void netTask(void *) {
     maybeSendCard();
 #endif
     if ((int32_t)(millis() - pauseUntilMs) >= 0) maybeSendState();
+    maybeSendLog();
     vTaskDelay(pdMS_TO_TICKS(5));
   }
 }
@@ -1409,6 +1475,8 @@ void setup() {
   Serial.begin(115200);
   delay(200);
   Serial.printf("\nSmart Parking entrance gate, firmware %s\n", FW_VERSION);
+  logQueue = xQueueCreate(LOG_QUEUE_LEN, sizeof(LogEvent));
+  logEvent("boot", "Gate controller started (firmware %s)", FW_VERSION);
 
   pinMode(PIN_STATUS_LED, OUTPUT);
 #if GATE_LIGHTS_ENABLED

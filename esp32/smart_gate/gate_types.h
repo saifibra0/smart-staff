@@ -39,6 +39,9 @@ struct CardEntry { char uid[21]; char name[33]; };
 // The last card tapped, waiting to be reported to the website.
 struct CardEvent { char uid[21]; char name[33]; char result[12]; uint32_t seq; };
 
+// One entrance record, waiting to be saved in Firebase /gate/log (see logEvent()).
+struct LogEvent { uint32_t ms; char type[11]; char text[100]; };
+
 // Everything the website shows, copied between the two cores under a lock.
 struct Snapshot {
   float cm; bool sensorFault; bool vehicle;

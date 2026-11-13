@@ -955,10 +955,13 @@
   // Scene geometry (SVG units). 6 px = 1 cm, so the 5-10 cm detection zone is 30-60 px in front of the sensor.
   const GS = { px: 6, sensorX: 318, pivotX: 470, pivotY: 170, clearX: 560, carW: 128, away: -220, out: 760, waitCm: 8 };
 
-  const gateLive = { db: null, refs: [], state: null, offset: 0, linked: false, error: '', pending: null, cards: null, lastCard: null, cardsError: '' };
+  const gateLive = { db: null, refs: [], state: null, offset: 0, linked: false, error: '', pending: null, cards: null, lastCard: null, cardsError: '',
+    records: null, recordsError: '' };
+  const GATE_LOG_LIMIT = 500;   // entrance records loaded (newest first)
   const gateSim = { on: false, timer: null, s: null };
   const gateUi = { log: [], prev: {}, sig: '', src: '', confirmClose: 0, feedback: null, timer: null, car: 'away', carAt: 0,
-    cardReg: null, cardsSig: '', confirmRemove: null, confirmRemoveAt: 0, lastCardKey: undefined };
+    cardReg: null, cardsSig: '', confirmRemove: null, confirmRemoveAt: 0, lastCardKey: undefined,
+    recRange: 'today', recType: 'all', recShow: 60, recConfirmClear: 0, recSig: '' };
 
   const gateConfigured = () => !!(FB && GATE.databaseURL && window.firebase && window.firebase.database);
   const gateServerNow = () => Date.now() + gateLive.offset;
@@ -996,6 +999,23 @@
         watch('gate/cards', (s) => { gateLive.cards = s.val() || {}; gateLive.cardsError = ''; gatePaint(); },
           () => { gateLive.cardsError = 'The database rules do not let this account read the card list.'; gatePaint(); });
         watch('gate/lastCard', (s) => gateOnCard(s.val()), () => { /* not the manager: no card taps */ });
+        // Entrance records: the newest GATE_LOG_LIMIT, saved by the ESP32 (and by this page for UNO card taps).
+        const logRef = db.ref('gate/log').orderByKey().limitToLast(GATE_LOG_LIMIT);
+        logRef.on('value', (s) => {
+          const v = s.val() || {};
+          gateLive.records = Object.keys(v).map((id) => {
+            const r = v[id] || {};
+            return Object.assign({ id }, r, { t: (Number(r.at) || 0) - (Number(r.ago) || 0) });
+          }).sort((a, b) => b.t - a.t || (a.id < b.id ? 1 : -1));
+          gateLive.recordsError = '';
+          paintRecords();
+        }, (e) => {
+          gateLive.recordsError = e && /permission/i.test(String(e.code || e.message))
+            ? 'The database rules do not let this account read the entrance records yet. Publish firebase/database.rules.json.'
+            : 'The entrance records could not be loaded. Reload the page to try again.';
+          paintRecords();
+        });
+        gateLive.refs.push(logRef);
       }
     } catch (e) {
       gateLive.db = null;
@@ -1005,8 +1025,9 @@
 
   function gateDisconnect() {
     gateLive.refs.forEach((r) => { try { r.off(); } catch (e) { /* already off */ } });
-    Object.assign(gateLive, { db: null, refs: [], state: null, linked: false, error: '', pending: null, cards: null, lastCard: null, cardsError: '' });
-    Object.assign(gateUi, { cardReg: null, cardsSig: '', confirmRemove: null, lastCardKey: undefined });
+    Object.assign(gateLive, { db: null, refs: [], state: null, linked: false, error: '', pending: null, cards: null, lastCard: null, cardsError: '',
+      records: null, recordsError: '' });
+    Object.assign(gateUi, { cardReg: null, cardsSig: '', confirmRemove: null, lastCardKey: undefined, recConfirmClear: 0, recSig: '' });
     unoDisconnect();
     Object.assign(uno, { last: null, msg: null, error: '', naming: null });
     simStop();
@@ -1498,6 +1519,7 @@
         <div class="card-h"><h2 class="card-title">Staff Cards (RFID)</h2><span class="muted" id="g-cards-count">${Object.keys(gateLive.cards || {}).length} registered</span></div>
         <div class="card-body" id="g-cards">${gateCardsHtml(m)}</div>
       </section>` : ''}
+      ${mgr && gateConfigured() ? recordsSection() : ''}
       <div class="grid-2">
         <section class="card">
           <div class="card-h"><h2 class="card-title">Gate Events</h2><span class="muted">Since this page opened</span></div>
@@ -1855,6 +1877,15 @@
       gateUi.log.length = Math.min(gateUi.log.length, 12);
       gatePaint();
     }
+    // Save the tap in the entrance records (the UNO itself is not online; this page reads it over USB).
+    if (gateLive.db && isManager() && fbUser()) {
+      const label = name ? `${name} (${uid})` : uid;
+      const what = { granted: 'access granted, gate opening', denied: 'access denied (not registered)', added: 'registered',
+        known: 'already registered', removed: 'removed', unknown: 'was not registered', error: 'not saved (card list full)' }[result];
+      const rec = { at: window.firebase.database.ServerValue.TIMESTAMP, src: 'uno', type: 'card', text: `Card gate (UNO): ${label}, ${what}`.slice(0, 160), uid, result };
+      if (name) rec.name = name.slice(0, 32);
+      gateLive.db.ref('gate/log').push(rec).catch(() => { /* records are a bonus; the tap still worked */ });
+    }
   }
 
   const unoBadge = () => (uno.port ? '<span class="live"><i></i>LIVE · UNO USB</span>' : '<span class="live paused"><i></i>NOT CONNECTED</span>');
@@ -1982,6 +2013,129 @@
     };
     requestAnimationFrame(run);
     setTimeout(run, 100);
+  }
+
+  /* ---------- Entrance records (manager): every gate event saved in Firebase /gate/log by the ESP32 (firmware
+   * 1.8.0+) and the UNO card taps this page saw. Kept until the manager clears them; the newest 500 are shown. */
+
+  const REC_KINDS = {
+    gate: ['open', 'close', 'mode'],
+    cards: ['card'],
+    alerts: ['estop', 'reset', 'refused', 'fault', 'ok']
+  };
+  const REC_RANGES = [['today', 'Today'], ['week', 'Last 7 days'], ['all', 'All']];
+  const REC_TYPES = [['all', 'All'], ['gate', 'Gate'], ['cards', 'Cards'], ['alerts', 'Alerts']];
+
+  function recTone(r) {
+    if (r.type === 'card') return /^(granted|added|known)$/.test(r.result || '') || /granted/.test(r.text || '') ? 'ok' : r.result === 'removed' ? 'ns' : 'bad';
+    return { open: 'ok', close: 'ns', mode: 'aw', reset: 'ok', ok: 'ok', boot: 'ip' }[r.type] || 'bad';
+  }
+  const recIcon = (r) => ({ open: 'arrow-up-from-line', close: 'arrow-down-to-line', mode: 'sliders-horizontal', card: 'credit-card',
+    estop: 'octagon-x', reset: 'rotate-ccw', refused: 'ban', fault: 'triangle-alert', ok: 'circle-check', boot: 'power' }[r.type] || 'dot');
+
+  function recInRange(r, range) {
+    if (range === 'all') return true;
+    if (range === 'week') return r.t >= Date.now() - 7 * 86400000;
+    const d = new Date(r.t), n = new Date();
+    return d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate();
+  }
+  const recOfType = (r, type) => type === 'all' || (REC_KINDS[type] || []).includes(r.type);
+  const recCardOk = (r) => r.type === 'card' && recTone(r) === 'ok' && r.result !== 'added' && r.result !== 'known';
+  const recCardBad = (r) => r.type === 'card' && recTone(r) === 'bad';
+
+  function recordsHtml() {
+    if (gateLive.recordsError) return `<p class="note">${esc(gateLive.recordsError)}</p>`;
+    if (!gateLive.records) return '<p class="note">Loading the entrance records…</p>';
+    const inRange = gateLive.records.filter((r) => recInRange(r, gateUi.recRange));
+    const shown = inRange.filter((r) => recOfType(r, gateUi.recType));
+    const n = (f) => inRange.filter(f).length;
+    const kpis = `<div class="kpis rec-kpis">
+        ${kpi({ n: n((r) => r.type === 'open'), label: 'Gate openings', icon: 'arrow-up-from-line', tone: 'ok' })}
+        ${kpi({ n: n(recCardOk), label: 'Cards granted', icon: 'credit-card', tone: 'ip' })}
+        ${kpi({ n: n(recCardBad), label: 'Cards denied', icon: 'ban', tone: 'bad' })}
+        ${kpi({ n: n((r) => REC_KINDS.alerts.includes(r.type) && recTone(r) === 'bad'), label: 'Alerts', icon: 'triangle-alert', tone: 'warn' })}
+      </div>`;
+    const tools = `<div class="rec-tools">
+        <div class="seg" role="group" aria-label="Period">${REC_RANGES.map(([k, l]) => `<button class="${gateUi.recRange === k ? 'is-on' : ''}" data-action="rec-range" data-range="${k}" aria-pressed="${gateUi.recRange === k}">${l}</button>`).join('')}</div>
+        <div class="chips" role="group" aria-label="Kind of record">${REC_TYPES.map(([k, l]) => `<button class="chip${gateUi.recType === k ? ' is-on' : ''}" data-action="rec-type" data-type="${k}" aria-pressed="${gateUi.recType === k}">${l} <b>${inRange.filter((r) => recOfType(r, k)).length}</b></button>`).join('')}</div>
+        <span class="rec-actions">
+          <button class="btn btn-ghost sm" data-action="rec-csv"${shown.length ? '' : ' disabled'}>${icon('download')}Download CSV</button>
+          <button class="btn ${gateUi.recConfirmClear ? 'btn-danger' : 'btn-ghost'} sm" data-action="rec-clear"${gateLive.records.length ? '' : ' disabled'}>${icon('trash-2')}${gateUi.recConfirmClear ? `Click again to delete all ${gateLive.records.length}` : 'Clear all'}</button>
+        </span>
+      </div>`;
+    if (!gateLive.records.length) {
+      return `${tools}<p class="note rec-empty">${icon('clipboard-list')} No entrance records yet. They appear here as the gate works: each opening and closing, emergency stops, sensor problems and card taps (the ESP32 needs firmware 1.8.0 or newer).</p>`;
+    }
+    if (!shown.length) return `${kpis}${tools}<p class="note rec-empty">No records for this period and filter.</p>`;
+    const rows = [];
+    let day = '';
+    shown.slice(0, gateUi.recShow).forEach((r) => {
+      const d = new Date(r.t);
+      const dl = gateDay(d);
+      if (dl !== day) {
+        day = dl;
+        const isToday = recInRange(r, 'today');
+        rows.push(`<div class="rec-day"><b>${isToday ? 'Today' : esc(dl)}</b>${isToday ? `<span>${esc(dl)}</span>` : ''}</div>`);
+      }
+      rows.push(`<div class="rec-row" role="listitem"><span class="rec-time">${esc(gateClock(d))}</span>
+        <span class="rec-ico tone-${recTone(r)}">${icon(recIcon(r))}</span>
+        <span class="rec-text">${esc(r.text || '')}</span>
+        <span class="pill ${r.src === 'uno' ? 'teal' : 'ip'}">${r.src === 'uno' ? 'UNO' : 'ESP32'}</span></div>`);
+    });
+    const more = shown.length > gateUi.recShow
+      ? `<button class="btn btn-ghost sm rec-more" data-action="rec-more">Show ${Math.min(60, shown.length - gateUi.recShow)} more (${shown.length - gateUi.recShow} hidden)</button>` : '';
+    return `${kpis}${tools}<div class="rec-list" role="list">${rows.join('')}</div>${more}`;
+  }
+
+  function recordsSection() {
+    const total = gateLive.records ? gateLive.records.length : 0;
+    return `<section class="card" id="records">
+        <div class="card-h"><h2 class="card-title">Entrance Records</h2><span class="muted" id="g-rec-count">${total ? `${total} saved` : 'Saved by the gate · only you can see them'}</span></div>
+        <div class="card-body" id="g-rec">${recordsHtml()}</div>
+      </section>`;
+  }
+
+  function paintRecords() {
+    const box = $('#g-rec');
+    if (!box) return;
+    const sig = JSON.stringify([gateLive.records && gateLive.records.length, gateLive.records && gateLive.records[0] && gateLive.records[0].id,
+      gateLive.recordsError, gateUi.recRange, gateUi.recType, gateUi.recShow, gateUi.recConfirmClear, new Date().toDateString()]);
+    if (sig === gateUi.recSig) return;
+    gateUi.recSig = sig;
+    box.innerHTML = recordsHtml();
+    const count = $('#g-rec-count');
+    const total = gateLive.records ? gateLive.records.length : 0;
+    if (count) count.textContent = total ? `${total} saved` : 'Saved by the gate · only you can see them';
+    paintIcons();
+  }
+
+  function recordsCsv() {
+    const rows = (gateLive.records || []).filter((r) => recInRange(r, gateUi.recRange) && recOfType(r, gateUi.recType));
+    const pad = (x) => String(x).padStart(2, '0');
+    const cell = (x) => `"${String(x == null ? '' : x).replace(/"/g, '""')}"`;
+    const lines = [['Date', 'Time', 'Event', 'Kind', 'Source', 'Card ID', 'Name', 'Result'].map(cell).join(',')];
+    rows.slice().reverse().forEach((r) => {
+      const d = new Date(r.t);
+      lines.push([`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`, `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`,
+        r.text, r.type, r.src === 'uno' ? 'UNO card gate' : 'ESP32 gate', r.uid || '', r.name || '', r.result || ''].map(cell).join(','));
+    });
+    const blob = new Blob([`﻿${lines.join('\r\n')}\r\n`], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    const n = new Date();
+    a.href = URL.createObjectURL(blob);
+    a.download = `entrance-records-${n.getFullYear()}-${pad(n.getMonth() + 1)}-${pad(n.getDate())}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+    track('action', `Downloaded ${rows.length} entrance records`);
+  }
+
+  function recordsClear() {
+    if (!gateLive.db || !isManager()) return;
+    const n = gateLive.records ? gateLive.records.length : 0;
+    gateLive.db.ref('gate/log').remove()
+      .then(() => { toast(`Deleted ${n} entrance records`); track('action', `Cleared ${n} entrance records`); })
+      .catch(() => toast('The records could not be deleted. Only the manager account can do that.'));
   }
 
   const gateSig = (m) => JSON.stringify([m.src, m.s.gate, m.s.mode, m.s.estop, m.s.clearSensor, gateSim.s && gateSim.s.car.phase,
@@ -2489,6 +2643,16 @@
         gatePaint();
         break;
       }
+      case 'rec-range': gateUi.recRange = el.dataset.range; gateUi.recShow = 60; paintRecords(); break;
+      case 'rec-type': gateUi.recType = el.dataset.type; gateUi.recShow = 60; paintRecords(); break;
+      case 'rec-more': gateUi.recShow += 60; paintRecords(); break;
+      case 'rec-csv': recordsCsv(); break;
+      case 'rec-clear':
+        if (!gateUi.recConfirmClear || Date.now() - gateUi.recConfirmClear > 6000) { gateUi.recConfirmClear = Date.now(); paintRecords(); break; }
+        gateUi.recConfirmClear = 0;
+        recordsClear();
+        paintRecords();
+        break;
       case 'uno-connect': unoConnect(); break;
       case 'uno-disconnect': unoDisconnect(); break;
       case 'uno-cmd': if (['open', 'add', 'remove'].includes(el.dataset.cmd)) unoCommand(el.dataset.cmd); break;

@@ -22,6 +22,19 @@
           ".write": "auth != null && auth.token.email === '23p0317@eng.asu.edu.eg' && auth.token.email_verified === true",
           ".validate": "$card.matches(/^[0-9A-F]{8,20}$/) && newData.hasChildren(['name', 'at']) && newData.child('name').isString() && newData.child('name').val().length > 0 && newData.child('name').val().length <= 32"
         }
+      },
+      "log": {
+        ".read": "auth != null && auth.token.email === '23p0317@eng.asu.edu.eg' && auth.token.email_verified === true",
+        ".write": "auth != null && auth.token.email === '23p0317@eng.asu.edu.eg' && auth.token.email_verified === true && !newData.exists()",
+        "$id": {
+          ".write": "auth != null && !data.exists() && (auth.uid === 'CDKVZcsAQjgj6NZqOP5WH7jV2hg2' || (auth.token.email === '23p0317@eng.asu.edu.eg' && auth.token.email_verified === true))",
+          ".validate": "newData.hasChildren(['at', 'src', 'type', 'text']) && newData.child('at').val() === now && newData.child('type').isString() && newData.child('type').val().matches(/^[a-z]{2,10}$/) && newData.child('text').isString() && newData.child('text').val().length > 0 && newData.child('text').val().length <= 160 && ((auth.uid === 'CDKVZcsAQjgj6NZqOP5WH7jV2hg2' && newData.child('src').val() === 'esp32') || (auth.uid !== 'CDKVZcsAQjgj6NZqOP5WH7jV2hg2' && newData.child('src').val() === 'uno'))",
+          "ago": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 86400000" },
+          "uid": { ".validate": "newData.isString() && newData.val().length <= 32" },
+          "name": { ".validate": "newData.isString() && newData.val().length <= 32" },
+          "result": { ".validate": "newData.isString() && newData.val().matches(/^(granted|denied|estop|added|removed|known|unknown|error)$/)" },
+          "$other": { ".validate": "$other === 'at' || $other === 'src' || $other === 'type' || $other === 'text'" }
+        }
       }
     }
   }
