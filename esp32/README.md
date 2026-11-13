@@ -65,7 +65,13 @@ not be opened to the internet. Both sides talk to Firebase instead, over HTTPS:
 
 ## 3. Firebase setup (once, about 10 minutes)
 
-**Already done for this project on 12 Nov 2026:** the database exists in Belgium (europe-west1), `data.js` has its URL, the ESP32 account `gate-esp32@smart-staff.iot` exists, and the rules are published. Skip to section 4.
+**Already done for this project on 12 Nov 2026:** the database exists in Belgium (europe-west1), `data.js` has its URL, the ESP32 account exists, and the rules are published. Skip to section 4.
+
+**Since 13 Nov 2026 the ESP32 account is `gate-esp32-2@smart-staff.iot`.** Firebase blocked sign-in for the
+first account (`gate-esp32@`) after too many wrong passwords, even after it was re-created, so the gate got a
+new account. `smart_gate.ino` sets that email, and `firebase/database.rules.json` holds its UID. If you ever
+lose the ESP32's password, re-create the account in the console, put the new UID in the rules and publish
+them, then give the ESP32 the password with `esp32/setup-wifi-window.ps1`.
 
 Use the Firebase console for the project **smart-staff-2de6a**: https://console.firebase.google.com
 
@@ -74,10 +80,10 @@ Use the Firebase console for the project **smart-staff-2de6a**: https://console.
    of the *Data* tab, for example `https://smart-staff-2de6a-default-rtdb.europe-west1.firebasedatabase.app`.
 2. **Tell the website.** In `data.js`, set `gate.databaseURL` to that URL (no trailing slash).
 3. **Create the ESP32's account.** Build → Authentication → Users → *Add user*. Use an email that is only
-   for the gate (for example `gate-esp32@smart-staff.iot`) and a long random password. Copy the new
+   for the gate (for example `gate-esp32-2@smart-staff.iot`) and a long random password. Copy the new
    user's **User UID**.
 4. **Publish the rules.** Realtime Database → *Rules*. Paste the contents of `firebase/database.rules.json`
-   and click *Publish*. The file already holds the UID of `gate-esp32@smart-staff.iot`; if you create a
+   and click *Publish*. The file already holds the UID of `gate-esp32-2@smart-staff.iot`; if you create a
    different ESP32 account, put its UID there instead. These rules only cover the Realtime Database.
    Your Firestore rules stay as they are.
 5. **Manager email.** Commands are accepted only from `23p0317@eng.asu.edu.eg`, and only once that email is
@@ -109,7 +115,7 @@ Use the Firebase console for the project **smart-staff-2de6a**: https://console.
    [wifi] connected, IP 192.168.1.23, signal -58 dBm
    [ota] Wi-Fi updates on: network port "smart-gate" (only while the gate is closed)
    [web] status page: http://smart-gate.local  or  http://192.168.1.23
-   [firebase] signed in as gate-esp32@smart-staff.iot (uid ...)
+   [firebase] signed in as gate-esp32-2@smart-staff.iot (uid ...)
    ```
 
 The on-board LED blinks slowly while connecting, stays on when it is online, blinks fast during an

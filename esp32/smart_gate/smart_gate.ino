@@ -56,8 +56,13 @@
 #ifndef OTA_PASSWORD
 #define OTA_PASSWORD ""   // an older secrets.h without it: Wi-Fi updates stay off
 #endif
+// The ESP32's Firebase account. On 2026-11-13 Firebase blocked sign-in for gate-esp32@smart-staff.iot
+// after too many wrong passwords (even after re-creating it), so the gate uses a new account. This
+// overrides an older secrets.h; the account's UID is in firebase/database.rules.json.
+#undef DEVICE_EMAIL
+#define DEVICE_EMAIL "gate-esp32-2@smart-staff.iot"
 
-static const char *FW_VERSION = "1.7.1";
+static const char *FW_VERSION = "1.7.2";
 
 /* ================================================================ settings: setup page first, then secrets.h */
 

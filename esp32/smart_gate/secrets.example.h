@@ -16,7 +16,8 @@
 
 // The gate's own Firebase account. Create it in Firebase console >
 // Build > Authentication > Users > Add user. Use it only for this ESP32.
-#define DEVICE_EMAIL      "gate-esp32@smart-staff.iot"
+// (smart_gate.ino currently sets DEVICE_EMAIL itself, to gate-esp32-2@smart-staff.iot.)
+#define DEVICE_EMAIL      "gate-esp32-2@smart-staff.iot"
 #define DEVICE_PASSWORD   "choose-a-long-random-password"
 
 // Password for firmware uploads over Wi-Fi, at least 8 characters, not used anywhere else.

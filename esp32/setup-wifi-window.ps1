@@ -79,7 +79,7 @@ $form.Controls.Add($net)
 
 [void](New-Label '2. Password of that Wi-Fi (your hotspot password)' 106)
 $wifiBox = New-Box 130 $true
-[void](New-Label '3. ESP32 account password (gate-esp32@smart-staff.iot in Firebase)' 166)
+[void](New-Label '3. ESP32 account password (gate-esp32-2@smart-staff.iot in Firebase)' 166)
 $devBox = New-Box 190 $true
 
 $show = New-Object System.Windows.Forms.CheckBox
