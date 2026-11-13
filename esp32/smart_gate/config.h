@@ -61,3 +61,17 @@
 #define SETUP_AP_NAME       "SmartGate-Setup"  // the ESP32's own Wi-Fi, open while it has no working Wi-Fi
 #define SETUP_AP_PASSWORD   "smartgate"        // needed to join it (8+ characters); change it for your own build
 #define SETUP_AFTER_MS      30000              // open the setup Wi-Fi if the saved Wi-Fi fails for this long
+
+// ---------------------------------------------------------------- RFID card reader (RC522, 3.3 V)
+// RC522 -> ESP32: SDA -> GPIO 5, SCK -> GPIO 14, MOSI -> GPIO 23, MISO -> GPIO 19, RST -> GPIO 4,
+//                 3.3V -> 3V3, GND -> GND, IRQ not connected.
+#define RFID_ENABLED        1
+#define PIN_RFID_SS         5
+#define PIN_RFID_SCK       14
+#define PIN_RFID_MOSI      23
+#define PIN_RFID_MISO      19
+#define PIN_RFID_RST        4
+#define RFID_GAIN        0x00   // receiver gain: 0x00 lowest ... 0x70 highest. Some RC522 clones only read at the lowest
+#define RFID_POLL_MS      150   // how often to look for a card
+#define CARDS_SYNC_MS   60000   // re-read the allowed cards from the website (the website also asks right after a change)
+#define MAX_CARDS          50

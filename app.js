@@ -955,9 +955,10 @@
   // Scene geometry (SVG units). 6 px = 1 cm, so the 5-10 cm detection zone is 30-60 px in front of the sensor.
   const GS = { px: 6, sensorX: 318, pivotX: 470, pivotY: 170, clearX: 560, carW: 128, away: -220, out: 760, waitCm: 8 };
 
-  const gateLive = { db: null, refs: [], state: null, offset: 0, linked: false, error: '', pending: null };
+  const gateLive = { db: null, refs: [], state: null, offset: 0, linked: false, error: '', pending: null, cards: null, lastCard: null, cardsError: '' };
   const gateSim = { on: false, timer: null, s: null };
-  const gateUi = { log: [], prev: {}, sig: '', src: '', confirmClose: 0, feedback: null, timer: null, car: 'away', carAt: 0 };
+  const gateUi = { log: [], prev: {}, sig: '', src: '', confirmClose: 0, feedback: null, timer: null, car: 'away', carAt: 0,
+    cardReg: null, cardsSig: '', confirmRemove: null, confirmRemoveAt: 0, lastCardKey: undefined };
 
   const gateConfigured = () => !!(FB && GATE.databaseURL && window.firebase && window.firebase.database);
   const gateServerNow = () => Date.now() + gateLive.offset;
@@ -988,6 +989,11 @@
           : 'The live gate feed stopped. Reload the page to reconnect.';
         gatePaint();
       });
+      if (isManager()) {
+        watch('gate/cards', (s) => { gateLive.cards = s.val() || {}; gateLive.cardsError = ''; gatePaint(); },
+          () => { gateLive.cardsError = 'The database rules do not let this account read the card list.'; gatePaint(); });
+        watch('gate/lastCard', (s) => gateOnCard(s.val()), () => { /* not the manager: no card taps */ });
+      }
     } catch (e) {
       gateLive.db = null;
       gateLive.error = 'Could not open the Realtime Database. Check gate.databaseURL in data.js.';
@@ -996,7 +1002,8 @@
 
   function gateDisconnect() {
     gateLive.refs.forEach((r) => { try { r.off(); } catch (e) { /* already off */ } });
-    Object.assign(gateLive, { db: null, refs: [], state: null, linked: false, error: '', pending: null });
+    Object.assign(gateLive, { db: null, refs: [], state: null, linked: false, error: '', pending: null, cards: null, lastCard: null, cardsError: '' });
+    Object.assign(gateUi, { cardReg: null, cardsSig: '', confirmRemove: null, lastCardKey: undefined });
     simStop();
     gateUi.log = [];
     gateUi.prev = {};
@@ -1071,6 +1078,10 @@
     }
     if (gateUi.confirmClose && Date.now() - gateUi.confirmClose > 5000) gateUi.confirmClose = 0;
     if (gateUi.feedback && Date.now() - gateUi.feedback.at > 15000) gateUi.feedback = null;
+    const reg = gateUi.cardReg;
+    if (reg && reg.waiting && Date.now() - reg.at > 60000) gateUi.cardReg = { msg: 'No card was tapped. Try again.', ok: false, shownAt: Date.now() };
+    else if (reg && reg.shownAt && Date.now() - reg.shownAt > 12000) gateUi.cardReg = null;
+    if (gateUi.confirmRemove && Date.now() - gateUi.confirmRemoveAt > 5000) gateUi.confirmRemove = null;
     gatePaint();
   }
 
@@ -1251,6 +1262,11 @@
       mode: has ? (st.mode === 'manual' ? ['MANUAL', 'aw'] : ['AUTOMATIC', 'ip']) : ['—', 'ns'],
       estop: has ? (st.estop ? ['ACTIVE', 'bad'] : ['OFF', 'ns']) : ['—', 'ns'],
       lane: !has ? ['—', 'ns'] : !st.clearSensor ? ['NOT INSTALLED', 'ns'] : st.clearOk === false ? ['FAULT', 'bad'] : st.laneBusy ? ['VEHICLE IN LANE', 'aw'] : ['CLEAR', 'ok'],
+      rfid: src !== 'live' ? ['—', 'ns'] : st.rfid === true ? ['OK', 'ok'] : st.rfid === false ? ['NOT FOUND', 'bad'] : ['NOT INSTALLED', 'ns'],
+      card: src === 'live' && gateLive.lastCard
+        ? [`${gateLive.lastCard.name || fmtUid(gateLive.lastCard.uid)} · ${gateLive.lastCard.result === 'granted' ? 'GRANTED' : gateLive.lastCard.result === 'estop' ? 'E-STOP' : 'DENIED'}`,
+          gateLive.lastCard.result === 'granted' ? 'ok' : 'bad']
+        : ['—', 'ns'],
       note: has ? String(st.note || '') : '',
       light: !has ? 'off' : st.estop || gateWord === 'stopped' ? 'stop' : gateWord === 'opening' || gateWord === 'closing' ? 'moving' : gateWord === 'open' ? 'open' : 'closed',
       meta: src === 'live'
@@ -1351,7 +1367,8 @@
 
   const GATE_ROWS = [
     ['esp', 'ESP32 Status'], ['vehicle', 'Vehicle Detection'], ['distance', 'Ultrasonic Distance'], ['gate', 'Gate Status'],
-    ['angle', 'Servo Angle'], ['mode', 'Operating Mode'], ['estop', 'Emergency Stop'], ['lane', 'Clearance Sensor']
+    ['angle', 'Servo Angle'], ['mode', 'Operating Mode'], ['estop', 'Emergency Stop'], ['lane', 'Clearance Sensor'],
+    ['rfid', 'RFID Reader'], ['card', 'Last Card']
   ];
 
   function gateMonitor(m) {
@@ -1471,6 +1488,10 @@
         <div class="card-h"><h2 class="card-title">Gate Control</h2><span class="muted">${m.src === 'sim' ? 'Controls the simulated gate' : 'Commands go to the ESP32 through Firebase'}</span></div>
         <div class="card-body" id="g-controls">${gateControls(m)}</div>
       </section>
+      ${mgr && gateConfigured() ? `<section class="card">
+        <div class="card-h"><h2 class="card-title">Staff Cards (RFID)</h2><span class="muted" id="g-cards-count">${Object.keys(gateLive.cards || {}).length} registered</span></div>
+        <div class="card-body" id="g-cards">${gateCardsHtml(m)}</div>
+      </section>` : ''}
       <div class="grid-2">
         <section class="card">
           <div class="card-h"><h2 class="card-title">Gate Events</h2><span class="muted">Since this page opened</span></div>
@@ -1486,6 +1507,8 @@
               <tr><td>HC-SR04 VCC · GND</td><td>5 V · common GND</td></tr>
               <tr><td>Servo signal</td><td>GPIO 18</td></tr>
               <tr><td>Servo power · GND</td><td>External 5–6 V supply · common GND</td></tr>
+              <tr><td>RC522 SDA · SCK · MOSI · MISO · RST</td><td>GPIO 5 · 14 · 23 · 19 · 4</td></tr>
+              <tr><td>RC522 3.3V · GND</td><td>3V3 (never 5 V) · GND</td></tr>
             </tbody></table>
             ${mgr && m.src !== 'live' ? `<ol class="gsteps">
               <li>Wire the ESP32 as shown above.</li>
@@ -1499,6 +1522,125 @@
     </div>`;
   }
 
+  /* ---------- RFID staff cards (manager): register, list, remove. Taps arrive from the ESP32 via /gate/lastCard. */
+
+  const fmtUid = (u) => String(u || '').replace(/(..)(?=.)/g, '$1:');
+
+  function gateOnCard(v) {
+    if (!v || typeof v !== 'object' || !v.uid) {
+      if (gateUi.lastCardKey === undefined) gateUi.lastCardKey = '';   // no tap yet: the next one is new
+      return;
+    }
+    const key = `${v.boot || ''}:${v.seq || ''}:${v.at || ''}`;
+    const first = gateUi.lastCardKey === undefined;
+    if (key === gateUi.lastCardKey) return;
+    gateUi.lastCardKey = key;
+    gateLive.lastCard = v;
+    if (first) { gatePaint(); return; }   // a tap from before this page opened
+    const who = v.name ? `${v.name} (${fmtUid(v.uid)})` : `Unknown card ${fmtUid(v.uid)}`;
+    const text = v.result === 'granted' ? `${who}: access granted`
+      : v.result === 'estop' ? `${who}: refused (emergency stop)` : `${who}: access denied`;
+    gateUi.log.unshift({ at: clockNow(), text, tone: v.result === 'granted' ? 'ok' : 'bad', src: 'live' });
+    gateUi.log.length = Math.min(gateUi.log.length, 12);
+    const reg = gateUi.cardReg;
+    if (reg && reg.waiting && (Number(v.at) || 0) >= reg.since - 2000) {
+      const known = gateLive.cards && gateLive.cards[v.uid];
+      gateUi.cardReg = known
+        ? { msg: `That card is already registered as “${known.name}”.`, ok: false, shownAt: Date.now() }
+        : { uid: v.uid };
+    }
+    gatePaint();
+  }
+
+  // Tells the ESP32 to read the card list again now (it also re-reads it every minute).
+  function gateSyncCards() {
+    if (!gateLive.db || !fbUser()) return;
+    const id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    gateLive.db.ref('gate/command').set({ id, action: 'sync', by: fbUser().uid, at: window.firebase.database.ServerValue.TIMESTAMP })
+      .catch(() => { /* the ESP32 still picks the change up within a minute */ });
+  }
+
+  function gateSaveCard(name) {
+    const reg = gateUi.cardReg;
+    if (!reg || !reg.uid || !gateLive.db || !fbUser()) return;
+    name = name.replace(/\s+/g, ' ').trim().slice(0, 32);
+    if (!name) { gateUi.cardReg = Object.assign({}, reg, { msg: 'Type a name for the card.', ok: false }); gatePaint(); return; }
+    const uid = reg.uid;
+    gateLive.db.ref(`gate/cards/${uid}`).set({ name, at: window.firebase.database.ServerValue.TIMESTAMP, by: fbUser().uid })
+      .then(() => {
+        gateUi.cardReg = { msg: `Saved. ${name}'s card now opens the gate.`, ok: true, shownAt: Date.now() };
+        track('action', `Registered RFID card ${fmtUid(uid)} for ${name}`);
+        gateSyncCards();
+        gatePaint();
+      })
+      .catch((e) => {
+        gateUi.cardReg = Object.assign({}, reg, {
+          msg: /permission/i.test(String(e && (e.code || e.message)))
+            ? 'Not allowed: only the verified manager account can register cards.' : 'Could not save the card. Try again.',
+          ok: false
+        });
+        gatePaint();
+      });
+  }
+
+  function gateRemoveCard(uid) {
+    if (!gateLive.db) return;
+    const name = (gateLive.cards && gateLive.cards[uid] && gateLive.cards[uid].name) || fmtUid(uid);
+    gateLive.db.ref(`gate/cards/${uid}`).remove()
+      .then(() => { toast(`Removed ${name}'s card`); track('action', `Removed RFID card ${fmtUid(uid)} (${name})`); gateSyncCards(); })
+      .catch(() => toast('Could not remove the card. Try again.'));
+  }
+
+  function gateCardsHtml(m) {
+    if (gateLive.cardsError) return `<p class="note">${esc(gateLive.cardsError)}</p>`;
+    const cards = Object.entries(gateLive.cards || {}).sort((a, b) => String(a[1].name || '').localeCompare(String(b[1].name || '')));
+    const reg = gateUi.cardReg;
+    const ready = m.src === 'live' && m.s.rfid === true;
+    let top;
+    if (reg && reg.uid) {
+      top = `<form class="gcard-reg" data-form="gate-card-save" autocomplete="off">
+          <p><b>Card ${esc(fmtUid(reg.uid))} read.</b> Whose card is it?</p>
+          <div class="gcard-row"><input class="input" id="g-card-name" name="name" maxlength="32" required placeholder="e.g. Saif Ibrahim">
+            <button class="btn btn-primary sm">${icon('check')}Save card</button>
+            <button type="button" class="btn btn-ghost sm" data-action="gate-card-cancel">Cancel</button></div>
+        </form>`;
+    } else if (reg && reg.waiting) {
+      top = `<div class="gcard-wait">${icon('credit-card')}<div><b>Tap the new card on the gate's reader now.</b><span>Waiting up to 60 seconds…</span></div>
+          <button class="btn btn-ghost sm" data-action="gate-card-cancel">Cancel</button></div>`;
+    } else {
+      top = `<div class="gcard-row"><button class="btn btn-primary sm" data-action="gate-card-register"${ready ? '' : ' disabled'}>${icon('plus')}Register a card</button>
+          <span class="muted">${ready ? 'Click, then tap the new card on the gate\'s reader.'
+            : m.src === 'live' ? 'The ESP32 cannot see its RFID reader. Check the RC522 wiring.'
+              : 'The ESP32 must be online to read a new card.'}</span></div>`;
+    }
+    const msg = reg && reg.msg ? `<p class="gfeed ${reg.ok ? 'ok' : 'bad'}">${esc(reg.msg)}</p>` : '';
+    const rows = cards.map(([uid, c]) => `<tr><td><b>${esc(c.name || '')}</b></td><td class="mono">${esc(fmtUid(uid))}</td>
+        <td>${c.at ? esc(new Date(c.at).toLocaleDateString()) : ''}</td>
+        <td class="n"><button class="btn ${gateUi.confirmRemove === uid ? 'btn-danger' : 'btn-ghost'} sm" data-action="gate-card-remove" data-uid="${esc(uid)}">${gateUi.confirmRemove === uid ? 'Click again to remove' : 'Remove'}</button></td></tr>`).join('');
+    return `${top}${msg}${cards.length
+      ? `<table class="gcards"><thead><tr><th>Name</th><th>Card ID</th><th>Added</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
+      : '<p class="note">No cards registered yet.</p>'}`;
+  }
+
+  const gateCardsSig = (m) => JSON.stringify([gateLive.cards, gateUi.cardReg, gateUi.confirmRemove, gateLive.cardsError, m.src, m.s && m.s.rfid]);
+
+  function paintCards(m) {
+    const box = $('#g-cards');
+    if (!box) return;
+    const sig = gateCardsSig(m);
+    if (sig === gateUi.cardsSig) return;
+    gateUi.cardsSig = sig;
+    const old = $('#g-card-name');
+    const typed = old ? old.value : null;
+    const hadFocus = document.activeElement === old;
+    box.innerHTML = gateCardsHtml(m);
+    const count = $('#g-cards-count');
+    if (count) count.textContent = `${Object.keys(gateLive.cards || {}).length} registered`;
+    const input = $('#g-card-name');
+    if (input) { if (typed !== null) input.value = typed; if (hadFocus || typed === null) input.focus(); }
+    paintIcons();
+  }
+
   const gateSig = (m) => JSON.stringify([m.src, m.s.gate, m.s.mode, m.s.estop, m.s.clearSensor, gateSim.s && gateSim.s.car.phase,
     gateLive.pending && gateLive.pending.id, gateUi.feedback && gateUi.feedback.at, !!gateUi.confirmClose, isManager(),
     gateLive.error, gateUi.log.length && gateUi.log[0].at + gateUi.log[0].text]);
@@ -1509,6 +1651,7 @@
     if (m.src !== gateUi.src) { render(); return; }   // a different mode has a different layout
     paintScene(m);
     paintMonitor(m);
+    paintCards(m);
     const sig = gateSig(m);
     if (sig === gateUi.sig) return;
     gateUi.sig = sig;
@@ -1993,6 +2136,16 @@
       case 'gate-sim-start': simStart(); break;
       case 'gate-sim-stop': simStop(); render(); break;
       case 'gate-sim-car': if (gateSim.s && gateSim.s.car.phase === 'away') { gateSim.s.car.phase = 'approach'; gateSim.s.car.x = GS.away; } gatePaint(); break;
+      case 'gate-card-register': gateUi.cardReg = { waiting: true, since: gateServerNow(), at: Date.now() }; gatePaint(); break;
+      case 'gate-card-cancel': gateUi.cardReg = null; gatePaint(); break;
+      case 'gate-card-remove': {
+        const uid = el.dataset.uid;
+        if (gateUi.confirmRemove !== uid) { gateUi.confirmRemove = uid; gateUi.confirmRemoveAt = Date.now(); gatePaint(); break; }
+        gateUi.confirmRemove = null;
+        gateRemoveCard(uid);
+        gatePaint();
+        break;
+      }
       case 'gate-sim-clear': if (gateSim.s) { gateSim.s.clearSensor = !gateSim.s.clearSensor; gateSim.s.laneBusy = false; gateSim.s.passSeen = false; } gatePaint(); break;
       case 'toggle-live': campus.live = !campus.live; render(); break;
       case 'auth-tab': ui.authTab = el.dataset.tab; mountAuth(true); break;
@@ -2083,6 +2236,7 @@
     if (kind === 'register') { submitRegister(f); return; }
     const data = Object.fromEntries(new FormData(f));
     const text = String(data.text || '').trim();
+    if (kind === 'gate-card-save') { gateSaveCard(String(data.name || '')); return; }
 
     if (kind === 'comment') {
       const t = findTask(f.dataset.id);

@@ -3,13 +3,25 @@
     ".read": false,
     ".write": false,
     "gate": {
-      ".read": "auth != null",
       "state": {
+        ".read": "auth != null",
         ".write": "auth != null && auth.uid === 'TY0SvK45rtYXu6wbP5Qz46EJtRm2'"
       },
       "command": {
+        ".read": "auth != null",
         ".write": "auth != null && auth.token.email === '23p0317@eng.asu.edu.eg' && auth.token.email_verified === true",
-        ".validate": "newData.hasChildren(['id', 'action', 'by', 'at']) && newData.child('id').isString() && newData.child('id').val().length <= 39 && newData.child('action').isString() && newData.child('action').val().matches(/^(open|close|auto|manual|estop|reset)$/) && newData.child('by').val() === auth.uid && newData.child('at').val() === now"
+        ".validate": "newData.hasChildren(['id', 'action', 'by', 'at']) && newData.child('id').isString() && newData.child('id').val().length <= 39 && newData.child('action').isString() && newData.child('action').val().matches(/^(open|close|auto|manual|estop|reset|sync)$/) && newData.child('by').val() === auth.uid && newData.child('at').val() === now"
+      },
+      "lastCard": {
+        ".read": "auth != null && (auth.uid === 'TY0SvK45rtYXu6wbP5Qz46EJtRm2' || (auth.token.email === '23p0317@eng.asu.edu.eg' && auth.token.email_verified === true))",
+        ".write": "auth != null && auth.uid === 'TY0SvK45rtYXu6wbP5Qz46EJtRm2'"
+      },
+      "cards": {
+        ".read": "auth != null && (auth.uid === 'TY0SvK45rtYXu6wbP5Qz46EJtRm2' || (auth.token.email === '23p0317@eng.asu.edu.eg' && auth.token.email_verified === true))",
+        "$card": {
+          ".write": "auth != null && auth.token.email === '23p0317@eng.asu.edu.eg' && auth.token.email_verified === true",
+          ".validate": "$card.matches(/^[0-9A-F]{8,20}$/) && newData.hasChildren(['name', 'at']) && newData.child('name').isString() && newData.child('name').val().length > 0 && newData.child('name').val().length <= 32"
+        }
       }
     }
   }

@@ -156,6 +156,32 @@ stays with the manager account on the website.
   sensor, and the emergency stop is off. During the update the barrier stays down. The website shows
   ESP32 OFFLINE for about 20–30 seconds while it restarts.
 
+## 5b. RFID staff cards (RC522)
+
+An RC522 reader on the ESP32 lets registered cards open the gate.
+
+| RC522 | ESP32 |
+| --- | --- |
+| SDA | GPIO 5 |
+| SCK | GPIO 14 |
+| MOSI | GPIO 23 |
+| MISO | GPIO 19 |
+| RST | GPIO 4 |
+| 3.3V | 3V3 (never 5 V) |
+| GND | GND |
+| IRQ | not connected |
+
+Needs the **MFRC522** library (Arduino IDE: *Tools → Manage Libraries → "MFRC522"*).
+
+- **Register a card:** on the website's Entrance Gate page (manager account), *Staff Cards → Register a card*,
+  tap the card on the reader, type a name, *Save card*. The ESP32 picks it up within a second.
+- **Tap a registered card:** the gate opens (and closes by itself as usual). Unknown cards are refused.
+  Every tap shows in *Gate Events* and *Last Card*.
+- The allowed cards live in Firebase (`/gate/cards`, only the manager can change them) and the ESP32
+  keeps a copy, so cards still work if the Wi-Fi drops.
+- Some RC522 clones only read cards at the lowest receiver gain (`RFID_GAIN 0x00` in `config.h`, the
+  default). `arduino/rfid_card` has a `test` command that checks a reader at each gain.
+
 ## 6. Connect it to the website
 
 Once `data.js` has the database URL and the ESP32 prints `signed in`, open the site's **Entrance Gate**

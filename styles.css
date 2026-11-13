@@ -1376,3 +1376,18 @@ button.kpi:hover { border-color: var(--accent); }
   .gs-ping, .gs-light.gl-moving, .gs-light.gl-stop { animation: none; }
   .gs-ping { opacity: .5; }
 }
+
+/* RFID staff cards */
+.gcard-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.gcard-row .input { flex: 1 1 200px; height: 34px; }
+.gcard-reg p { margin: 0 0 8px; }
+.gcard-wait { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 12px; border: 2px dashed var(--accent); border-radius: 10px; }
+.gcard-wait > svg.lucide { width: 22px; height: 22px; color: var(--accent); animation: pulse 1.2s infinite; }
+.gcard-wait b, .gcard-wait span { display: block; }
+.gcard-wait span { color: var(--fg-2); font-size: 12.5px; margin-top: 2px; }
+.gcards { width: 100%; border-collapse: collapse; margin-top: 14px; font-size: 13px; }
+.gcards th { text-align: left; font-size: 12px; font-weight: 600; color: var(--fg-2); padding: 6px 8px 6px 0; }
+.gcards td { padding: 8px 8px 8px 0; border-top: 1px solid var(--line); vertical-align: middle; }
+.gcards td.n { text-align: right; padding-right: 0; }
+.gcards .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; color: var(--fg-2); }
+@media (max-width: 560px) { .gcards th:nth-child(3), .gcards td:nth-child(3) { display: none; } }

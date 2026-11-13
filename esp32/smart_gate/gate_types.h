@@ -33,6 +33,12 @@ struct Command {
   Action action;
 };
 
+// An allowed RFID card (from Firebase /gate/cards, cached in flash).
+struct CardEntry { char uid[21]; char name[33]; };
+
+// The last card tapped, waiting to be reported to the website.
+struct CardEvent { char uid[21]; char name[33]; char result[12]; uint32_t seq; };
+
 // Everything the website shows, copied between the two cores under a lock.
 struct Snapshot {
   float cm; bool sensorFault; bool vehicle;

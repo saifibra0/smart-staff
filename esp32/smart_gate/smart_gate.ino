@@ -42,6 +42,8 @@
 #include <DNSServer.h>
 #include <Preferences.h>
 #include "mbedtls/base64.h"
+#include <SPI.h>
+#include <MFRC522.h>
 #include <sys/time.h>
 #include "config.h"
 #include "gate_types.h"
@@ -55,7 +57,7 @@
 #define OTA_PASSWORD ""   // an older secrets.h without it: Wi-Fi updates stay off
 #endif
 
-static const char *FW_VERSION = "1.6.0";
+static const char *FW_VERSION = "1.7.0";
 
 /* ================================================================ settings: setup page first, then secrets.h */
 
@@ -423,6 +425,140 @@ void publishSnapshot() {
   portEXIT_CRITICAL(&shareMux);
 }
 
+/* ================================================================ RFID cards (RC522 on SPI) */
+
+// Allowed cards come from Firebase /gate/cards (managed on the website) and are cached in flash,
+// so they keep working when the Wi-Fi is down.
+static CardEntry cardList[MAX_CARDS];
+static uint8_t cardListCount = 0;
+static portMUX_TYPE cardMux = portMUX_INITIALIZER_UNLOCKED;
+static CardEvent cardEvent;                 // the last tap, waiting to be reported to the website
+static volatile uint32_t cardEventSeq = 0;
+static volatile bool cardsSyncNow = true;   // read the card list again as soon as possible
+static bool rfidOk = false;
+#if RFID_ENABLED
+static MFRC522 rfid(PIN_RFID_SS, PIN_RFID_RST);
+#endif
+
+static void uidHex(const byte *b, byte n, char *out) {
+  static const char *hex = "0123456789ABCDEF";
+  byte k = 0;
+  for (byte i = 0; i < n && k < 20; i++) { out[k++] = hex[b[i] >> 4]; out[k++] = hex[b[i] & 15]; }
+  out[k] = 0;
+}
+
+static bool cardAllowed(const char *uid, char *nameOut) {
+  bool found = false;
+  portENTER_CRITICAL(&cardMux);
+  for (uint8_t i = 0; i < cardListCount; i++) {
+    if (!strcmp(cardList[i].uid, uid)) { strcpy(nameOut, cardList[i].name); found = true; break; }
+  }
+  portEXIT_CRITICAL(&cardMux);
+  return found;
+}
+
+static void loadCardCache() {
+  Preferences p;
+  if (!p.begin("gate", true)) return;
+  String s = p.getString("cards", "");
+  p.end();
+  uint8_t n = 0;
+  int from = 0;
+  while (from < (int)s.length() && n < MAX_CARDS) {
+    int nl = s.indexOf('\n', from);
+    if (nl < 0) nl = s.length();
+    String line = s.substring(from, nl);
+    int eq = line.indexOf('=');
+    if (eq > 0) {
+      CardEntry &c = cardList[n++];
+      memset(&c, 0, sizeof(c));
+      strncpy(c.uid, line.substring(0, eq).c_str(), sizeof(c.uid) - 1);
+      strncpy(c.name, line.substring(eq + 1).c_str(), sizeof(c.name) - 1);
+    }
+    from = nl + 1;
+  }
+  cardListCount = n;
+  if (n) Serial.printf("[card] %u allowed card(s) from the last sync\n", (unsigned)n);
+}
+
+static void saveCardCache() {
+  static CardEntry copy[MAX_CARDS];
+  uint8_t n;
+  portENTER_CRITICAL(&cardMux);
+  n = cardListCount;
+  memcpy(copy, cardList, sizeof(CardEntry) * n);
+  portEXIT_CRITICAL(&cardMux);
+  String s;
+  for (uint8_t i = 0; i < n; i++) { s += copy[i].uid; s += '='; s += copy[i].name; s += '\n'; }
+  Preferences p;
+  if (p.begin("gate", false)) { p.putString("cards", s); p.end(); }
+}
+
+// A card was tapped: open for an allowed card, then report the tap to the website.
+static void onCard(const char *uid) {
+  char name[33] = "";
+  const char *result;
+  if (!cardAllowed(uid, name)) result = "denied";
+  else if (gate.estop) result = "estop";
+  else {
+    result = "granted";
+    char why[96];
+    snprintf(why, sizeof(why), "Opened by card: %s", name[0] ? name : uid);
+    startOpening(why);
+  }
+  Serial.printf("[card] %s %s -> %s\n", uid, name[0] ? name : "(not registered)", result);
+  portENTER_CRITICAL(&shareMux);
+  strncpy(cardEvent.uid, uid, sizeof(cardEvent.uid) - 1);
+  strncpy(cardEvent.name, name, sizeof(cardEvent.name) - 1);
+  strncpy(cardEvent.result, result, sizeof(cardEvent.result) - 1);
+  cardEventSeq = cardEventSeq + 1;
+  cardEvent.seq = cardEventSeq;
+  portEXIT_CRITICAL(&shareMux);
+}
+
+static void rfidBegin() {
+#if RFID_ENABLED
+  SPI.begin(PIN_RFID_SCK, PIN_RFID_MISO, PIN_RFID_MOSI, PIN_RFID_SS);
+  rfid.PCD_Init();
+  delay(10);
+  rfid.PCD_SetAntennaGain(RFID_GAIN);
+  byte v = rfid.PCD_ReadRegister(MFRC522::VersionReg);
+  rfidOk = v != 0x00 && v != 0xFF;
+  Serial.printf("[card] RC522 reader %s (chip version 0x%02X)\n", rfidOk ? "found" : "NOT FOUND: check its wiring", v);
+#endif
+}
+
+static void rfidPoll(uint32_t now) {
+#if RFID_ENABLED
+  static uint32_t lastPollMs = 0, lastTapMs = 0, lastInitMs = 0;
+  static char lastUid[21] = "";
+  if (now - lastPollMs < RFID_POLL_MS) return;
+  lastPollMs = now;
+  // RC522 clones can freeze: restart the chip every 10 s while idle (this also finds a reader connected later).
+  if (now - lastInitMs > 10000 && now - lastTapMs > 3000) {
+    lastInitMs = now;
+    rfid.PCD_Init();
+    rfid.PCD_SetAntennaGain(RFID_GAIN);
+    byte v = rfid.PCD_ReadRegister(MFRC522::VersionReg);
+    bool ok = v != 0x00 && v != 0xFF;
+    if (ok != rfidOk) { rfidOk = ok; Serial.printf("[card] RC522 reader %s\n", ok ? "found" : "lost"); }
+  }
+  if (!rfidOk) return;
+  if (!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial()) return;
+  char uid[21];
+  uidHex(rfid.uid.uidByte, rfid.uid.size, uid);
+  rfid.PICC_HaltA();
+  rfid.PCD_StopCrypto1();
+  bool again = !strcmp(uid, lastUid) && now - lastTapMs < 2000;   // a card held still is read again and again
+  lastTapMs = now;
+  if (again) return;
+  strncpy(lastUid, uid, sizeof(lastUid) - 1);
+  onCard(uid);
+#else
+  (void)now;
+#endif
+}
+
 /* ================================================================ network task (core 0) */
 
 static WiFiClientSecure dbTls, authTls;
@@ -576,6 +712,11 @@ static void handleCommandJson(const String &reply) {
     Serial.printf("[cmd] %s reached the ESP32 %lu ms after the website sent it\n", id.c_str(), (unsigned long)(epochMs() - at));
   if (timeSynced() && at && epochMs() > at + CMD_MAX_AGE_MS) {
     setLastCommand(id.c_str(), "ignored: command was too old");
+    return;
+  }
+  if (jsonValue(reply, "action") == "sync") {   // the website changed the allowed cards
+    cardsSyncNow = true;
+    setLastCommand(id.c_str(), "ok");
     return;
   }
   bool ok;
@@ -732,6 +873,7 @@ static String stateJson(const Snapshot &s) {
   j += ",\"laneBusy\":" + String(s.laneBusy ? "true" : "false");
   j += ",\"note\":\"" + jsonEscape(s.note) + "\"";
   j += ",\"lastCmd\":\"" + jsonEscape(s.lastCmd) + "\",\"lastCmdResult\":\"" + jsonEscape(s.lastCmdResult) + "\"";
+  j += ",\"rfid\":" + String(RFID_ENABLED ? (rfidOk ? "true" : "false") : "null") + ",\"cards\":" + String(cardListCount);
   return j;   // closed by sendState, which adds the live-only fields
 }
 
@@ -755,6 +897,90 @@ static void maybeSendState() {
   lastSentMs = now;
   if (code >= 200 && code < 300) lastSentState = body;
   else Serial.printf("[firebase] status update failed (HTTP %d) %s\n", code, reply.c_str());
+}
+
+
+// Reads {"058AC7C3":{"name":"Saif","at":...},...} into out[]; returns how many cards.
+static uint8_t parseCards(const String &js, CardEntry *out, uint8_t max) {
+  uint8_t n = 0;
+  int len = js.length(), depth = 0;
+  for (int i = 0; i < len && n < max; i++) {
+    char c = js[i];
+    if (c == '{') { depth++; continue; }
+    if (c == '}') { depth--; continue; }
+    if (c != '"') continue;
+    int end = i + 1;
+    while (end < len && js[end] != '"') { if (js[end] == '\\') end++; end++; }
+    if (end >= len) break;
+    if (depth == 1) {
+      int k = end + 1;
+      while (k < len && isspace((unsigned char)js[k])) k++;
+      if (k < len && js[k] == ':') {
+        k++;
+        while (k < len && isspace((unsigned char)js[k])) k++;
+        if (k < len && js[k] == '{') {
+          int d = 0, j = k;
+          for (; j < len; j++) {                       // the matching '}', skipping strings
+            if (js[j] == '"') { j++; while (j < len && js[j] != '"') { if (js[j] == '\\') j++; j++; } continue; }
+            if (js[j] == '{') d++;
+            else if (js[j] == '}' && --d == 0) break;
+          }
+          String key = js.substring(i + 1, end);
+          String name = jsonValue(js.substring(k, j + 1), "name");
+          if (key.length() && key.length() < sizeof(out[n].uid)) {
+            memset(&out[n], 0, sizeof(CardEntry));
+            strncpy(out[n].uid, key.c_str(), sizeof(out[n].uid) - 1);
+            strncpy(out[n].name, name.c_str(), sizeof(out[n].name) - 1);
+            n++;
+          }
+          i = j;
+          continue;
+        }
+      }
+    }
+    i = end;
+  }
+  return n;
+}
+
+// Reads the allowed cards from Firebase; keeps the cached list if that fails.
+static void syncCards() {
+  String reply;
+  int code = httpCall(dbHttp, dbTls, "GET", dbUrl("/gate/cards"), "", reply);
+  if (code != 200) {
+    static int lastBad = 0;
+    if (code != lastBad) Serial.printf("[card] could not read the card list (HTTP %d); using the saved list\n", code);
+    lastBad = code;
+    return;
+  }
+  static CardEntry fresh[MAX_CARDS];
+  memset(fresh, 0, sizeof(fresh));
+  uint8_t n = reply == "null" ? 0 : parseCards(reply, fresh, MAX_CARDS);
+  bool changed;
+  portENTER_CRITICAL(&cardMux);
+  changed = n != cardListCount || memcmp(fresh, cardList, sizeof(CardEntry) * n) != 0;
+  if (changed) { memcpy(cardList, fresh, sizeof(CardEntry) * n); cardListCount = n; }
+  portEXIT_CRITICAL(&cardMux);
+  if (changed) {
+    Serial.printf("[card] %u allowed card(s) from the website\n", (unsigned)n);
+    saveCardCache();
+  }
+}
+
+// Reports the last tap to /gate/lastCard, once per tap.
+static uint32_t sentCardSeq = 0;
+static void maybeSendCard() {
+  if (cardEventSeq == sentCardSeq) return;
+  CardEvent e;
+  portENTER_CRITICAL(&shareMux);
+  e = cardEvent;
+  portEXIT_CRITICAL(&shareMux);
+  String body = String("{\"uid\":\"") + e.uid + "\",\"name\":\"" + jsonEscape(e.name) + "\",\"result\":\"" + e.result +
+                "\",\"seq\":" + String(e.seq) + ",\"boot\":\"" + bootId + "\",\"at\":{\".sv\":\"timestamp\"}}";
+  String reply;
+  int code = httpCall(dbHttp, dbTls, "PUT", dbUrl("/gate/lastCard") + "&print=silent", body, reply);
+  sentCardSeq = e.seq;   // each tap is reported once, even if that fails
+  if (code < 200 || code >= 300) Serial.printf("[card] could not report the tap to the website (HTTP %d)\n", code);
 }
 
 void netTask(void *) {
@@ -834,6 +1060,11 @@ void netTask(void *) {
     }
     if (sseUp) ssePump();
     else if (now - lastPoll >= CMD_POLL_MS) { lastPoll = now; pollCommand(); }
+#if RFID_ENABLED
+    static uint32_t lastCardsSyncMs = 0;
+    if (cardsSyncNow || millis() - lastCardsSyncMs >= CARDS_SYNC_MS) { cardsSyncNow = false; lastCardsSyncMs = millis(); syncCards(); }
+    maybeSendCard();
+#endif
     if ((int32_t)(millis() - pauseUntilMs) >= 0) maybeSendState();
     vTaskDelay(pdMS_TO_TICKS(5));
   }
@@ -1179,6 +1410,8 @@ void setup() {
 #if CLEAR_SENSOR_ENABLED
   sonarBegin(clearance, PIN_CLEAR_TRIG, PIN_CLEAR_ECHO);
 #endif
+  rfidBegin();
+  loadCardCache();
   snprintf(bootId, sizeof(bootId), "%08lx", (unsigned long)esp_random());
   setNote("Gate closed");
   publishSnapshot();
@@ -1246,6 +1479,9 @@ void loop() {
       Serial.println("[sensor] no echo while the servo moves: the servo may be pulling the sensor's 5 V down. Give the servo its own 5 V supply.");
     }
   }
+
+  // RFID card reader.
+  rfidPoll(now);
 
   // 2. Local emergency stop button.
 #if ESTOP_BUTTON_ENABLED
