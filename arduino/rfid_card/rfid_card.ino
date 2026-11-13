@@ -70,8 +70,9 @@ const unsigned long SERVO_STEP_MS = 8;      // ms per degree: 90 degrees in abou
 const int SERVO_STOP_US = 1500;             // pulse that means "stop"
 const int SERVO_SPEED_US = 200;             // 1500 +/- 200 us = medium speed
 unsigned long TURN_90_MS = 400;             // how long a quarter turn (90 degrees) takes (measured 2026-11-13)
-unsigned long TURN_BACK_MS = 400;           // closing turn: a 360-degree servo often turns slower one way, so set
-                                            // this until the arm stops right at 0 ("turnback 480" to try)
+unsigned long TURN_BACK_MS = 450;           // closing turn: this servo turns back slower than it opens. 400 ms ended
+                                            // ~15 deg short, 440 ms a few degrees short after 3 taps (measured 2026-11-13).
+                                            // Try other values live with "turnback <ms>".
 const int OPEN_DIRECTION = 1;               // -1 if the arm opens the wrong way
 
 // Home button: a push button placed where the closed arm presses it. Closing turns back fast, then
