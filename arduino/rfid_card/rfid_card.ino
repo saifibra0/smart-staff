@@ -1,7 +1,7 @@
 /*
  * Smart Parking: RFID card gate (Arduino UNO + RC522 reader + servo)
  * ------------------------------------------------------------------
- * A registered card opens the gate: the servo turns smoothly to 90 degrees, stays open for a few
+ * A registered card opens the gate: the arm turns from 0 to 90 degrees, stays open for a few
  * seconds, then closes again. Unknown cards are refused. Registered cards are kept in the UNO's
  * EEPROM, so they survive power-off and new uploads. Works on its own: no Wi-Fi needed.
  *
@@ -25,6 +25,15 @@
  *   test    checks the RC522 reader
  *   help    shows these commands
  * Tapping a card otherwise prints ACCESS GRANTED (and opens the gate) or ACCESS DENIED.
+ *
+ * "360 degree" (continuous-rotation) servos, CONTINUOUS_SERVO 1: they can't be sent to an angle, only
+ * told to turn, so 90 degrees = turning for TURN_90_MS and back. Put the arm at the closed spot before
+ * power-on. To find the time:
+ *   fwd 400 / back 400   turn forward / back for 400 ms
+ *   turn90 400           use 400 ms for the gate until the next upload (then set TURN_90_MS)
+ *   stop                 stop; the arm's position now counts as closed
+ * The arm can drift a little over many openings; nudge it back with fwd/back + stop. A normal 180-degree
+ * servo (CONTINUOUS_SERVO 0) goes to exactly 0 and 90 degrees every time.
  */
 #include <SPI.h>
 #include <MFRC522.h>
@@ -39,10 +48,22 @@ const uint8_t PIN_BUZZER = 5;     // optional
 const uint8_t PIN_SERVO = 3;      // gate servo signal
 
 // Gate (servo) settings
+// Which servo is it? 1 = "360 degree" continuous-rotation servo (it can only be told a speed and a
+// direction, not an angle), 0 = normal 180-degree servo (goes exactly to the angles below).
+#define CONTINUOUS_SERVO 1
+const unsigned long GATE_OPEN_MS = 5000;    // how long the gate stays open after a card
+
+// Normal 180-degree servo
 const int GATE_CLOSED_DEG = 0;
 const int GATE_OPEN_DEG = 90;
 const unsigned long SERVO_STEP_MS = 8;      // ms per degree: 90 degrees in about 0.7 s
-const unsigned long GATE_OPEN_MS = 5000;    // how long the gate stays open after a card
+
+// 360-degree servo: open = turn one way for TURN_90_MS, then stop; close = turn back for the same time.
+// Find the right time with the "fwd 250" / "back 250" commands (milliseconds), then set it here.
+const int SERVO_STOP_US = 1500;             // pulse that means "stop"
+const int SERVO_SPEED_US = 200;             // 1500 +/- 200 us = medium speed
+unsigned long TURN_90_MS = 400;             // how long a quarter turn (90 degrees) takes (measured 2026-11-13)
+const int OPEN_DIRECTION = 1;               // -1 if the arm opens the wrong way
 
 const uint8_t MAX_CARDS = 20;
 const uint8_t UID_MAX = 10;       // RC522 UIDs are 4, 7 or 10 bytes
@@ -122,6 +143,62 @@ void listCards() {
 
 /* ---------------------------------------------------------------- gate (servo), moved without blocking */
 
+#if CONTINUOUS_SERVO
+
+// The servo turns only while it gets a signal; between moves the signal is switched off, so it
+// cannot creep. Opening while it is still closing turns back for the time it already ran.
+enum GateState : uint8_t { G_CLOSED, G_OPENING, G_OPEN, G_CLOSING, G_TEST };
+GateState gateState = G_CLOSED;
+unsigned long runStartMs = 0, runEndMs = 0, closeAtMs = 0;
+
+void runServo(int direction, unsigned long ms) {
+  if (!gateServo.attached()) gateServo.attach(PIN_SERVO);
+  gateServo.writeMicroseconds(SERVO_STOP_US + direction * OPEN_DIRECTION * SERVO_SPEED_US);
+  runStartMs = millis();
+  runEndMs = runStartMs + ms;
+}
+
+void stopServo() {
+  gateServo.writeMicroseconds(SERVO_STOP_US);
+  delay(20);
+  gateServo.detach();
+}
+
+void openGate() {
+  closeAtMs = millis() + TURN_90_MS + GATE_OPEN_MS;   // another card keeps it open longer
+  if (gateState == G_CLOSED) { runServo(+1, TURN_90_MS); gateState = G_OPENING; Serial.println(F("[gate] opening")); }
+  else if (gateState == G_CLOSING) {                    // go back up for as long as it already went down
+    unsigned long ran = millis() - runStartMs;
+    runServo(+1, ran);
+    gateState = G_OPENING;
+    Serial.println(F("[gate] opening again"));
+  }
+}
+
+void updateGate() {
+  unsigned long now = millis();
+  if ((gateState == G_OPENING || gateState == G_CLOSING || gateState == G_TEST) && (long)(now - runEndMs) >= 0) {
+    stopServo();
+    if (gateState == G_OPENING) { gateState = G_OPEN; Serial.println(F("[gate] open")); }
+    else if (gateState == G_CLOSING) { gateState = G_CLOSED; Serial.println(F("[gate] closed")); }
+    else { gateState = G_CLOSED; Serial.println(F("[gate] test turn done")); }
+  }
+  if (gateState == G_OPEN && (long)(now - closeAtMs) >= 0) {
+    runServo(-1, TURN_90_MS);
+    gateState = G_CLOSING;
+    Serial.println(F("[gate] closing"));
+  }
+}
+
+// "fwd 250" / "back 250": turn for that many ms, to find how long 90 degrees takes.
+void testTurn(int direction, unsigned long ms) {
+  runServo(direction, ms);
+  gateState = G_TEST;
+  Serial.print(F("[gate] test turn ")); Serial.print(direction > 0 ? F("forward ") : F("back ")); Serial.print(ms); Serial.println(F(" ms"));
+}
+
+#else
+
 int gateAngle = GATE_CLOSED_DEG, gateTarget = GATE_CLOSED_DEG, moveFrom = GATE_CLOSED_DEG;
 unsigned long moveStartMs = 0, closeAtMs = 0;
 
@@ -154,6 +231,8 @@ void updateGate() {
   if (gateTarget == GATE_OPEN_DEG && gateAngle == GATE_OPEN_DEG && (long)(now - closeAtMs) >= 0) moveGateTo(GATE_CLOSED_DEG);
 }
 
+#endif
+
 /* ---------------------------------------------------------------- feedback (LEDs and buzzer, without blocking) */
 
 unsigned long ledOffAtMs = 0;
@@ -174,6 +253,9 @@ void updateLeds() {
 
 void help() {
   Serial.println(F("[rfid] commands: add | remove | list | clear | open | test | help  (Serial Monitor at 115200, line ending: Newline)"));
+#if CONTINUOUS_SERVO
+  Serial.println(F("[gate] 360-degree servo: fwd <ms> | back <ms> | turn90 <ms> | stop  (to find the time of a 90 degree turn)"));
+#endif
 }
 
 // "test": checks the reader step by step. Hold a card on the reader while it runs.
@@ -229,14 +311,20 @@ void setup() {
   pinMode(PIN_GREEN, OUTPUT);
   pinMode(PIN_RED, OUTPUT);
   pinMode(PIN_BUZZER, OUTPUT);
+#if CONTINUOUS_SERVO
+  pinMode(PIN_SERVO, OUTPUT);          // no signal = the 360-degree servo stays still
+  digitalWrite(PIN_SERVO, LOW);
+#else
   gateServo.attach(PIN_SERVO);
   gateServo.write(GATE_CLOSED_DEG);   // start with the gate closed
+#endif
   SPI.begin();
   reader.PCD_Init();
   delay(50);
   reader.PCD_SetAntennaGain(READER_GAIN);
   Serial.println();
-  Serial.println(F("Smart Parking RFID card gate (UNO + RC522 + servo on D3)"));
+  Serial.println(CONTINUOUS_SERVO ? F("Smart Parking RFID card gate (UNO + RC522 + 360-degree servo on D3)")
+                                  : F("Smart Parking RFID card gate (UNO + RC522 + 180-degree servo on D3)"));
 
   byte version = reader.PCD_ReadRegister(MFRC522::VersionReg);
   if (version == 0x00 || version == 0xFF) {
@@ -266,6 +354,19 @@ void handleCommand(String cmd) {
     Serial.println(F("[rfid] all cards removed"));
   } else if (cmd == "open") {
     openGate();
+#if CONTINUOUS_SERVO
+  } else if (cmd.startsWith("fwd ") || cmd.startsWith("back ")) {
+    long ms = cmd.substring(cmd.indexOf(' ') + 1).toInt();
+    if (ms > 0 && ms <= 3000) testTurn(cmd.startsWith("fwd") ? +1 : -1, ms);
+    else Serial.println(F("[gate] use e.g. fwd 250 or back 250 (1 to 3000 ms)"));
+  } else if (cmd.startsWith("turn90 ")) {
+    long ms = cmd.substring(7).toInt();
+    if (ms > 0 && ms <= 3000) { TURN_90_MS = ms; Serial.print(F("[gate] a 90 degree turn now takes ")); Serial.print(ms); Serial.println(F(" ms (until the next upload)")); }
+  } else if (cmd == "stop") {
+    stopServo();
+    gateState = G_CLOSED;               // wherever the arm is now counts as closed
+    Serial.println(F("[gate] stopped (this position now counts as closed)"));
+#endif
   } else if (cmd == "test") {
     readerTest();
   } else if (cmd == "help") {
