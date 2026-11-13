@@ -636,8 +636,9 @@ void loop() {
   if (inField == 1 || !reader.PICC_ReadCardSerial()) { restartField(); return; }   // try again cleanly
 
   String uid = uidText(reader.uid.uidByte, reader.uid.size);
-  // The same card held on the reader is read again and again; react once per 1.5 s.
-  if (uid == lastUid && millis() - lastTapMs < 1500) { lastTapMs = millis(); reader.PICC_HaltA(); return; }
+  // The same card held on (or near) the reader is read again and again. It counts as a new tap once
+  // it has been out of range for 0.6 s (was 1.5 s, which swallowed quick second taps).
+  if (uid == lastUid && millis() - lastTapMs < 600) { lastTapMs = millis(); reader.PICC_HaltA(); return; }
   lastUid = uid;
   lastTapMs = millis();
 
