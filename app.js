@@ -1004,6 +1004,8 @@
     gateLive.refs.forEach((r) => { try { r.off(); } catch (e) { /* already off */ } });
     Object.assign(gateLive, { db: null, refs: [], state: null, linked: false, error: '', pending: null, cards: null, lastCard: null, cardsError: '' });
     Object.assign(gateUi, { cardReg: null, cardsSig: '', confirmRemove: null, lastCardKey: undefined });
+    unoDisconnect();
+    Object.assign(uno, { last: null, msg: null, error: '', naming: null });
     simStop();
     gateUi.log = [];
     gateUi.prev = {};
@@ -1452,7 +1454,7 @@
 
   function gateLog() {
     if (!gateUi.log.length) return '<p class="note gate-empty">Gate events appear here as they happen.</p>';
-    return gateUi.log.map((e) => `<div class="li gl-row"><span class="li-time">${esc(e.at)}</span><span class="gdot tone-${e.tone}"></span><span class="li-main"><b>${esc(e.text)}</b></span><span class="pill ${e.src === 'sim' ? 'aw' : 'ok'}">${e.src === 'sim' ? 'SIM' : 'LIVE'}</span></div>`).join('');
+    return gateUi.log.map((e) => `<div class="li gl-row"><span class="li-time">${esc(e.at)}</span><span class="gdot tone-${e.tone}"></span><span class="li-main"><b>${esc(e.text)}</b></span><span class="pill ${e.src === 'sim' ? 'aw' : e.src === 'uno' ? 'teal' : 'ok'}">${e.src === 'sim' ? 'SIM' : e.src === 'uno' ? 'UNO' : 'LIVE'}</span></div>`).join('');
   }
 
   function gateBadge(src) {
@@ -1469,7 +1471,7 @@
     const mgr = isManager();
     return `
     <div class="stack gate-page">
-      <div class="band"><h1>Smart Parking — Automatic Entrance Gate<span>· ESP32 · HC-SR04 · servo</span></h1><span id="g-badge">${gateBadge(m.src)}</span></div>
+      <div class="band"><h1>Smart Parking — Automatic Entrance Gate<span>· ESP32 · HC-SR04 · servo · UNO card reader</span></h1><span id="g-badge">${gateBadge(m.src)}</span></div>
       <div id="g-banner">${gateBanner(m)}</div>
       <div class="gate-grid">
         <section class="card">
@@ -1488,6 +1490,7 @@
         <div class="card-h"><h2 class="card-title">Gate Control</h2><span class="muted">${m.src === 'sim' ? 'Controls the simulated gate' : 'Commands go to the ESP32 through Firebase'}</span></div>
         <div class="card-body" id="g-controls">${gateControls(m)}</div>
       </section>
+      ${unoSection()}
       ${mgr && gateConfigured() ? `<section class="card">
         <div class="card-h"><h2 class="card-title">Staff Cards (RFID)</h2><span class="muted" id="g-cards-count">${Object.keys(gateLive.cards || {}).length} registered</span></div>
         <div class="card-body" id="g-cards">${gateCardsHtml(m)}</div>
@@ -1507,8 +1510,9 @@
               <tr><td>HC-SR04 VCC · GND</td><td>5 V · common GND</td></tr>
               <tr><td>Servo signal</td><td>GPIO 18</td></tr>
               <tr><td>Servo power · GND</td><td>External 5–6 V supply · common GND</td></tr>
-              <tr><td>RC522 SDA · SCK · MOSI · MISO · RST</td><td>GPIO 5 · 14 · 23 · 19 · 4</td></tr>
-              <tr><td>RC522 3.3V · GND</td><td>3V3 (never 5 V) · GND</td></tr>
+              <tr><td>RC522 → Arduino UNO SDA · SCK · MOSI · MISO · RST</td><td>D10 · D13 · D11 · D12 · D9</td></tr>
+              <tr><td>RC522 3.3V · GND</td><td>UNO 3.3V (never 5 V) · GND</td></tr>
+              <tr><td>Card gate servo (UNO)</td><td>Signal D3 · 5V · GND</td></tr>
             </tbody></table>
             ${mgr && m.src !== 'live' ? `<ol class="gsteps">
               <li>Wire the ESP32 as shown above.</li>
@@ -1639,6 +1643,341 @@
     const input = $('#g-card-name');
     if (input) { if (typed !== null) input.value = typed; if (hadFocus || typed === null) input.focus(); }
     paintIcons();
+  }
+
+  /* ---------- Card gate on the Arduino UNO (RC522 reader + its own servo), read over USB with Web Serial.
+   * The UNO decides who gets in (its registered cards live in its EEPROM) and moves its servo itself. This
+   * page reads what the UNO prints and can send it the same commands as the Serial Monitor (open, add,
+   * remove, list). Works in Chrome or Edge on the computer the UNO is plugged into. Card names stay in
+   * this browser (localStorage); names saved in the Staff Cards list are used too. */
+
+  const UNO_NAMES_KEY = 'asu-foe-smart-staff:uno-cards:v1';
+  const UNO_STAMP = {
+    granted: ['ACCESS GRANTED', 'ok'], denied: ['ACCESS DENIED', 'bad'], added: ['REGISTERED', 'info'],
+    known: ['ALREADY REGISTERED', 'info'], removed: ['REMOVED', 'info'], unknown: ['NOT REGISTERED', 'bad'], error: ['NOT SAVED', 'bad']
+  };
+  const uno = {
+    supported: !!(navigator.serial && window.isSecureContext),
+    port: null, reader: null, stopping: false, connecting: false, error: '', queue: Promise.resolve(),
+    readerOk: null, gate: 'unknown', angles: { closed: 0, open: 90 }, armDeg: 0,
+    cards: null, listing: null, listingCount: 0, mode: '', modeAt: 0, msg: null, last: null, naming: null,
+    names: {}, sig: '', raf: 0
+  };
+  try { uno.names = JSON.parse(localStorage.getItem(UNO_NAMES_KEY) || '{}') || {}; } catch (e) { uno.names = {}; }
+
+  function unoName(uid) {
+    if (uno.names[uid]) return uno.names[uid];
+    const c = gateLive.cards && gateLive.cards[uid.replace(/:/g, '')];
+    return c && c.name ? c.name : '';
+  }
+
+  async function unoConnect() {
+    if (!uno.supported || uno.port || uno.connecting) return;
+    uno.connecting = true;
+    uno.error = '';
+    unoPaint();
+    let port;
+    try {
+      // Arduino (genuine and clones with CH340 or FTDI chips). The ESP32's CP210x is left out on purpose.
+      port = await navigator.serial.requestPort({ filters: [{ usbVendorId: 0x2341 }, { usbVendorId: 0x2A03 }, { usbVendorId: 0x1A86 }, { usbVendorId: 0x0403 }] });
+    } catch (e) {
+      uno.connecting = false;   // the chooser was closed without picking a port
+      unoPaint();
+      return;
+    }
+    try {
+      await port.open({ baudRate: 115200 });   // opening restarts the UNO, which then prints its card list
+    } catch (e) {
+      uno.connecting = false;
+      uno.error = 'Could not open the UNO. Close the Arduino IDE\'s Serial Monitor (or any other program using the UNO) and try again.';
+      unoPaint();
+      return;
+    }
+    Object.assign(uno, { port, connecting: false, stopping: false, readerOk: null, gate: 'closed', cards: null, listing: null, mode: '', msg: null });
+    track('action', 'Connected the RFID card gate (Arduino UNO) to the website');
+    unoPaint();
+    unoRead(port);
+    // If this UNO didn't restart on connect, ask for the card list and settings directly.
+    setTimeout(() => { if (uno.port === port && !uno.cards && !uno.listing) { unoSend('list'); unoSend('help'); } }, 3000);
+  }
+
+  async function unoRead(port) {
+    const decoder = new TextDecoder();
+    let buf = '';
+    while (port.readable && uno.port === port && !uno.stopping) {
+      const reader = port.readable.getReader();
+      uno.reader = reader;
+      try {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          let i;
+          while ((i = buf.indexOf('\n')) >= 0) {
+            const line = buf.slice(0, i).replace(/\r$/, '');
+            buf = buf.slice(i + 1);
+            unoLine(line);
+          }
+          if (buf.length > 400) buf = buf.slice(-400);
+        }
+      } catch (e) {
+        /* a glitch in the stream: keep reading while the port is still there */
+      } finally {
+        try { reader.releaseLock(); } catch (e) { /* already released */ }
+      }
+    }
+    try { await port.close(); } catch (e) { /* already closed or unplugged */ }
+    if (uno.port === port) {
+      const asked = uno.stopping;
+      Object.assign(uno, { port: null, reader: null, stopping: false, gate: 'unknown', mode: '', naming: null });
+      uno.error = asked ? '' : 'The UNO was unplugged or stopped answering. Plug it in and click Connect again.';
+      unoPaint();
+    }
+  }
+
+  function unoDisconnect() {
+    if (!uno.port) return;
+    uno.stopping = true;
+    if (uno.reader) uno.reader.cancel().catch(() => { /* the read loop closes the port */ });
+  }
+
+  // Commands go one at a time, each as a line, like typing them in the Serial Monitor.
+  function unoSend(cmd) {
+    uno.queue = uno.queue.then(async () => {
+      if (!uno.port || !uno.port.writable) return false;
+      const writer = uno.port.writable.getWriter();
+      try { await writer.write(new TextEncoder().encode(`${cmd}\n`)); return true; } catch (e) { return false; } finally { writer.releaseLock(); }
+    });
+    return uno.queue;
+  }
+
+  function unoCommand(cmd) {
+    if (!uno.port) return;
+    uno.msg = null;
+    if (cmd === 'add' || cmd === 'remove') {
+      uno.mode = cmd;
+      uno.modeAt = Date.now();
+      setTimeout(() => { if (uno.mode && Date.now() - uno.modeAt > 16000) { uno.mode = ''; unoPaint(); } }, 16500);
+    }
+    if (cmd === 'open') track('action', 'Opened the card gate (Arduino UNO) from the website');
+    unoSend(cmd).then((ok) => {
+      if (ok) return;
+      uno.mode = '';
+      uno.msg = { ok: false, text: 'Could not send that to the UNO. Is it still plugged in?' };
+      unoPaint();
+    });
+    unoPaint();
+  }
+
+  function unoSaveName(uid, name) {
+    name = String(name || '').replace(/\s+/g, ' ').trim().slice(0, 32);
+    if (name) uno.names[uid] = name; else delete uno.names[uid];
+    try { localStorage.setItem(UNO_NAMES_KEY, JSON.stringify(uno.names)); } catch (e) { /* storage full or blocked: kept for this visit */ }
+    uno.naming = null;
+    if (name) toast(`Saved: card ${uid} is ${name}'s`);
+    unoPaint();
+  }
+
+  // One line printed by the UNO (see arduino/rfid_card/rfid_card.ino).
+  function unoLine(line) {
+    let m;
+    if (/^Smart Parking RFID card gate/.test(line)) {
+      Object.assign(uno, { gate: 'closed', mode: '', cards: null, listing: null });
+    } else if ((m = line.match(/^\[rfid\] (\d+) cards? registered/))) {
+      uno.listingCount = Number(m[1]);
+      uno.listing = uno.listingCount ? [] : null;
+      if (!uno.listingCount) uno.cards = [];
+    } else if ((m = line.match(/^\[rfid\]\s+\d+\) ([0-9A-F:]+)/)) && uno.listing) {
+      uno.listing.push(m[1]);
+      if (uno.listing.length >= uno.listingCount) { uno.cards = uno.listing; uno.listing = null; }
+    } else if ((m = line.match(/^\[rfid\] card ([0-9A-F:]+) \(([^)]*)\) -> (.*)$/))) {
+      unoCard(m[1], m[2], m[3]);
+    } else if (/^\[rfid\] reader OK/.test(line)) {
+      uno.readerOk = true;
+    } else if (/^\[rfid\] READER NOT FOUND/.test(line)) {
+      uno.readerOk = false;
+    } else if (/^\[rfid\] ADD:/.test(line)) {
+      uno.mode = 'add'; uno.modeAt = Date.now();
+    } else if (/^\[rfid\] REMOVE:/.test(line)) {
+      uno.mode = 'remove'; uno.modeAt = Date.now();
+    } else if (/^\[rfid\] no card tapped in time/.test(line)) {
+      uno.mode = '';
+      uno.msg = { ok: false, text: 'No card was tapped within 15 seconds, so nothing changed.' };
+    } else if (/^\[rfid\] all cards removed/.test(line)) {
+      uno.cards = [];
+    } else if ((m = line.match(/^\[gate\] (closed|open) angle = (\d+)/))) {
+      uno.angles[m[1] === 'closed' ? 'closed' : 'open'] = Number(m[2]);
+    } else if ((m = line.match(/^\[gate\] 180-degree servo: closed (\d+) deg, open (\d+) deg/))) {
+      uno.angles = { closed: Number(m[1]), open: Number(m[2]) };
+    } else if ((m = line.match(/^\[gate\] (opening|open|closing|closed)\b/))) {
+      uno.gate = m[1];
+    } else {
+      return;
+    }
+    unoPaint();
+  }
+
+  function unoCard(uid, type, rest) {
+    const result = /^ACCESS GRANTED/.test(rest) ? 'granted' : /^ACCESS DENIED/.test(rest) ? 'denied'
+      : /^REGISTERED/.test(rest) ? 'added' : /^already registered/.test(rest) ? 'known'
+        : /^REMOVED/.test(rest) ? 'removed' : /^was not registered/.test(rest) ? 'unknown' : 'error';
+    uno.last = { uid, type, result, at: Date.now() };
+    const name = unoName(uid);
+    const who = name ? `${name} (${uid})` : `Card ${uid}`;
+    const msgs = {
+      added: [true, `${who} is registered on the UNO and now opens the gate. Give it a name below.`],
+      known: [true, `${who} is already registered.`],
+      removed: [true, `${who} was removed and no longer opens the gate.`],
+      unknown: [false, `${who} wasn't registered, so nothing changed.`],
+      error: [false, 'Not saved: the UNO\'s card list is full (20 cards).']
+    };
+    uno.msg = msgs[result] ? { ok: msgs[result][0], text: msgs[result][1] } : null;
+    if (msgs[result]) uno.mode = '';
+    if (result === 'added') {
+      uno.cards = (uno.cards || []).filter((u) => u !== uid).concat(uid);
+      if (!name) uno.naming = uid;
+      track('action', `Registered RFID card ${uid} on the card gate (Arduino UNO)`);
+    }
+    if (result === 'removed') {
+      uno.cards = (uno.cards || []).filter((u) => u !== uid);
+      if (uno.naming === uid) uno.naming = null;
+      track('action', `Removed RFID card ${uid} from the card gate (Arduino UNO)`);
+    }
+    const text = result === 'granted' ? `${who}: access granted, gate opening`
+      : result === 'denied' ? `${who}: access denied (not registered)`
+        : result === 'added' ? `${who}: registered` : result === 'removed' ? `${who}: removed` : '';
+    if (text) {
+      gateUi.log.unshift({ at: clockNow(), text, tone: result === 'denied' ? 'bad' : 'ok', src: 'uno' });
+      gateUi.log.length = Math.min(gateUi.log.length, 12);
+      gatePaint();
+    }
+  }
+
+  const unoBadge = () => (uno.port ? '<span class="live"><i></i>LIVE · UNO USB</span>' : '<span class="live paused"><i></i>NOT CONNECTED</span>');
+
+  function unoGateLabel() {
+    const g = uno.gate;
+    if (g === 'open') return [`Open · ${uno.angles.open}°`, 'ok'];
+    if (g === 'closed') return [`Closed · ${uno.angles.closed}°`, 'ns'];
+    if (g === 'opening') return ['Opening…', 'warn'];
+    if (g === 'closing') return ['Closing…', 'warn'];
+    return ['—', 'ns'];
+  }
+
+  function unoCardView() {
+    const l = uno.last;
+    if (!l) {
+      return `<div class="nfc-card is-idle"><div class="nfc-top"><span class="nfc-chip"></span>${icon('nfc')}</div>
+        <div class="nfc-wait">${icon('credit-card')}<b>Tap a card on the reader</b><span>It shows up here the moment the UNO reads it.</span></div></div>`;
+    }
+    const name = unoName(l.uid);
+    const [stamp, tone] = UNO_STAMP[l.result] || UNO_STAMP.error;
+    const fresh = Date.now() - l.at < 1500 ? ' is-new' : '';
+    const label = name || (l.result === 'denied' || l.result === 'unknown' ? 'Unknown card' : 'Staff card');
+    return `<div class="nfc-card is-${tone}${fresh}" role="status" aria-label="${esc(`${label}, card ${l.uid}: ${stamp.toLowerCase()}`)}">
+        <div class="nfc-top"><span class="nfc-chip"></span>${icon('nfc')}</div>
+        <div class="nfc-stamp">${stamp}</div>
+        <div class="nfc-name">${esc(label)}</div>
+        <div class="nfc-uid">${esc(l.uid)}</div>
+        <div class="nfc-foot"><span>${esc(l.type)}</span><span>${esc(new Date(l.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }))}</span></div>
+      </div>`;
+  }
+
+  function unoCardList() {
+    if (!uno.cards) return '<p class="note">Reading the card list from the UNO…</p>';
+    if (!uno.cards.length) return '<p class="note">No cards are registered on the UNO yet. Click “Register a card”, then tap the card on the reader.</p>';
+    const rows = uno.cards.map((uid) => {
+      const name = unoName(uid);
+      if (uno.naming === uid) {
+        return `<tr><td colspan="3"><form class="gcard-row" data-form="uno-name" data-uid="${esc(uid)}" autocomplete="off">
+            <input class="input" id="uno-name-input" name="name" maxlength="32" placeholder="Whose card is ${esc(uid)}? e.g. Saif Ibrahim" value="${esc(uno.names[uid] || '')}">
+            <button class="btn btn-primary sm">${icon('check')}Save</button>
+            <button type="button" class="btn btn-ghost sm" data-action="uno-name-cancel">Cancel</button></form></td></tr>`;
+      }
+      return `<tr${uno.last && uno.last.uid === uid ? ' class="is-last"' : ''}><td><b>${name ? esc(name) : '<span class="muted">No name yet</span>'}</b></td>
+        <td class="mono">${esc(uid)}</td>
+        <td class="n"><button class="btn btn-ghost sm" data-action="uno-name" data-uid="${esc(uid)}">${name ? 'Rename' : 'Add name'}</button></td></tr>`;
+    }).join('');
+    return `<h3 class="mini-h uno-h">Cards registered on the UNO (${uno.cards.length})</h3>
+      <table class="gcards uno-cards"><thead><tr><th>Name</th><th>Card ID</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+  }
+
+  function unoBody() {
+    if (!uno.supported) {
+      return `<p class="note">${icon('usb')} To see card taps live, open this page in <b>Chrome</b> or <b>Edge</b> on the computer the Arduino UNO is plugged into.</p>`;
+    }
+    if (!uno.port) {
+      return `<div class="uno-connect">${icon('usb')}<div><b>Connect the card gate</b><span>Plug the Arduino UNO into this computer with its USB cable and close the Arduino IDE's Serial Monitor. Then click Connect and choose the UNO (Arduino Uno, COM5).</span></div>
+          <button class="btn btn-primary sm" data-action="uno-connect"${uno.connecting ? ' disabled' : ''}>${icon('plug')}${uno.connecting ? 'Connecting…' : 'Connect UNO'}</button></div>
+        ${uno.error ? `<p class="gfeed bad" role="status">${esc(uno.error)}</p>` : ''}
+        ${uno.last ? `<div class="uno-grid uno-past"><div>${unoCardView()}</div></div>` : ''}`;
+    }
+    const busy = uno.mode ? ' disabled' : '';
+    const [gLabel, gTone] = unoGateLabel();
+    return `<div class="uno-grid">
+        <div class="uno-tap">${unoCardView()}</div>
+        <div class="uno-side">
+          <div class="uno-gate" aria-hidden="true"><div class="uno-base"></div><div class="uno-post"></div><div class="uno-arm" id="uno-arm" style="transform:rotate(${-uno.armDeg}deg)"></div></div>
+          <div class="uno-state"><span class="muted">Barrier (servo on D3)</span><span id="uno-gate-state" class="pill ${gTone}">${esc(gLabel)}</span></div>
+          <div class="uno-btns">
+            <button class="btn btn-soft sm" data-action="uno-cmd" data-cmd="open">${icon('arrow-up-from-line')}Open gate</button>
+            <button class="btn btn-ghost sm" data-action="uno-cmd" data-cmd="add"${busy}>${icon('plus')}Register a card</button>
+            <button class="btn btn-ghost sm" data-action="uno-cmd" data-cmd="remove"${busy}>${icon('minus')}Remove a card</button>
+          </div>
+        </div>
+      </div>
+      ${uno.mode ? `<div class="gcard-wait uno-wait">${icon('credit-card')}<div><b>${uno.mode === 'add' ? 'Tap the new card on the reader now.' : 'Tap the card to remove on the reader now.'}</b><span>The UNO waits up to 15 seconds.</span></div></div>` : ''}
+      ${uno.msg ? `<p class="gfeed ${uno.msg.ok ? 'ok' : 'bad'}" role="status">${esc(uno.msg.text)}</p>` : ''}
+      ${uno.readerOk === false ? '<p class="gfeed bad">The UNO cannot find its RC522 reader. Check the wiring: SDA→10, SCK→13, MOSI→11, MISO→12, RST→9, 3.3V, GND.</p>' : ''}
+      ${unoCardList()}
+      <div class="uno-foot"><span class="muted">Connected over USB. Card names are saved in this browser.</span><button class="link" data-action="uno-disconnect">Disconnect</button></div>`;
+  }
+
+  function unoSection() {
+    return `<section class="card">
+        <div class="card-h"><h2 class="card-title">Card Gate · Arduino UNO</h2><span id="g-uno-badge">${unoBadge()}</span></div>
+        <div class="card-body" id="g-uno">${unoBody()}</div>
+      </section>`;
+  }
+
+  const unoSig = () => JSON.stringify([uno.supported, !!uno.port, uno.connecting, uno.error, uno.readerOk, uno.mode, uno.cards, uno.names,
+    uno.naming, uno.msg, uno.last && uno.last.at, gateLive.cards && Object.keys(gateLive.cards).length]);
+
+  // Repaints at most once per frame (or after 100 ms when the tab is in the background and frames pause).
+  // The barrier is turned with a CSS transition, so it is updated in place.
+  function unoPaint() {
+    if (uno.raf) return;
+    uno.raf = 1;
+    const run = () => {
+      if (!uno.raf) return;
+      uno.raf = 0;
+      const box = $('#g-uno');
+      if (!box) return;
+      const sig = unoSig();
+      if (sig !== uno.sig) {
+        uno.sig = sig;
+        const old = $('#uno-name-input');
+        const typed = old ? old.value : null;
+        const hadFocus = document.activeElement === old;
+        box.innerHTML = unoBody();
+        const badge = $('#g-uno-badge');
+        if (badge) badge.innerHTML = unoBadge();
+        const input = $('#uno-name-input');
+        if (input) { if (typed !== null) input.value = typed; if (hadFocus || typed === null) input.focus(); }
+        paintIcons();
+      }
+      const arm = $('#uno-arm');
+      const deg = uno.gate === 'opening' || uno.gate === 'open' ? 90 : 0;
+      if (arm && deg !== uno.armDeg) {
+        void arm.offsetWidth;   // start from the angle on screen, so the move animates
+        arm.style.transform = `rotate(${-deg}deg)`;
+        uno.armDeg = deg;
+      }
+      const st = $('#uno-gate-state');
+      if (st) { const [t, c] = unoGateLabel(); st.textContent = t; st.className = `pill ${c}`; }
+    };
+    requestAnimationFrame(run);
+    setTimeout(run, 100);
   }
 
   const gateSig = (m) => JSON.stringify([m.src, m.s.gate, m.s.mode, m.s.estop, m.s.clearSensor, gateSim.s && gateSim.s.car.phase,
@@ -2146,6 +2485,11 @@
         gatePaint();
         break;
       }
+      case 'uno-connect': unoConnect(); break;
+      case 'uno-disconnect': unoDisconnect(); break;
+      case 'uno-cmd': if (['open', 'add', 'remove'].includes(el.dataset.cmd)) unoCommand(el.dataset.cmd); break;
+      case 'uno-name': uno.naming = el.dataset.uid; unoPaint(); break;
+      case 'uno-name-cancel': uno.naming = null; unoPaint(); break;
       case 'gate-sim-clear': if (gateSim.s) { gateSim.s.clearSensor = !gateSim.s.clearSensor; gateSim.s.laneBusy = false; gateSim.s.passSeen = false; } gatePaint(); break;
       case 'toggle-live': campus.live = !campus.live; render(); break;
       case 'auth-tab': ui.authTab = el.dataset.tab; mountAuth(true); break;
@@ -2237,6 +2581,7 @@
     const data = Object.fromEntries(new FormData(f));
     const text = String(data.text || '').trim();
     if (kind === 'gate-card-save') { gateSaveCard(String(data.name || '')); return; }
+    if (kind === 'uno-name') { unoSaveName(f.dataset.uid, data.name); return; }
 
     if (kind === 'comment') {
       const t = findTask(f.dataset.id);

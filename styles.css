@@ -1391,3 +1391,52 @@ button.kpi:hover { border-color: var(--accent); }
 .gcards td.n { text-align: right; padding-right: 0; }
 .gcards .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; color: var(--fg-2); }
 @media (max-width: 560px) { .gcards th:nth-child(3), .gcards td:nth-child(3) { display: none; } }
+
+/* Card gate on the Arduino UNO (read over USB with Web Serial) */
+.uno-connect { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 14px; border: 1px dashed var(--line); border-radius: 12px; background: var(--surface-2); }
+.uno-connect > svg.lucide { width: 24px; height: 24px; color: var(--accent); }
+.uno-connect b, .uno-connect span { display: block; }
+.uno-connect span { color: var(--fg-2); font-size: 13px; margin-top: 2px; }
+@media (max-width: 560px) {
+  .uno-connect { grid-template-columns: auto minmax(0, 1fr); }
+  .uno-connect .btn { grid-column: 1 / -1; justify-self: start; }
+}
+.uno-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 280px); gap: 20px; align-items: center; }
+.uno-grid.uno-past { margin-top: 14px; grid-template-columns: minmax(0, 1fr); opacity: .75; }
+@media (max-width: 720px) { .uno-grid { grid-template-columns: minmax(0, 1fr); } }
+
+.nfc-card { position: relative; display: flex; flex-direction: column; width: 100%; max-width: 380px; aspect-ratio: 1.586; padding: 18px 20px; border-radius: 16px; overflow: hidden;
+  color: #fff; background: linear-gradient(135deg, #2a7be6, #11408a); box-shadow: 0 12px 26px rgba(16, 40, 80, .22); }
+.nfc-card.is-ok { background: linear-gradient(135deg, #22a466, #0c5634); }
+.nfc-card.is-bad { background: linear-gradient(135deg, #e0525a, #86202a); }
+.nfc-card.is-idle { color: var(--fg-2); background: var(--surface-2); border: 2px dashed var(--line); box-shadow: none; }
+.nfc-top { display: flex; justify-content: space-between; align-items: center; }
+.nfc-chip { width: 42px; height: 31px; border-radius: 6px; background: linear-gradient(135deg, #f5d98a, #c89a2c); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .18); }
+.nfc-card.is-idle .nfc-chip { background: var(--surface-3); box-shadow: none; }
+.nfc-top svg.lucide { width: 26px; height: 26px; opacity: .85; }
+.nfc-stamp { position: absolute; top: 18px; left: 50%; transform: translateX(-50%) rotate(-6deg); padding: 4px 10px; border: 2px solid currentColor; border-radius: 6px;
+  background: rgba(255, 255, 255, .14); font-size: 13px; font-weight: 800; letter-spacing: .08em; white-space: nowrap; }
+.nfc-name { margin-top: auto; font-size: 21px; font-weight: 700; line-height: 1.2; overflow-wrap: anywhere; }
+.nfc-uid { margin-top: 2px; font-family: ui-monospace, Consolas, monospace; font-size: 16px; letter-spacing: .08em; opacity: .92; }
+.nfc-foot { display: flex; justify-content: space-between; gap: 8px; margin-top: 8px; font-size: 12px; opacity: .82; }
+.nfc-wait { margin: auto; display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center; }
+.nfc-wait svg.lucide { width: 30px; height: 30px; color: var(--accent); animation: pulse 1.2s infinite; }
+.nfc-wait b { color: var(--fg); }
+.nfc-wait span { font-size: 12.5px; }
+.nfc-card.is-new { animation: nfc-pop .5s ease-out; }
+@keyframes nfc-pop { 0% { transform: scale(.93); } 60% { transform: scale(1.03); } 100% { transform: none; } }
+@media (max-width: 420px) { .nfc-name { font-size: 18px; } .nfc-uid { font-size: 14px; } .nfc-stamp { font-size: 11.5px; } }
+
+.uno-gate { position: relative; height: 180px; border-radius: 12px; background: var(--surface-2); overflow: hidden; }
+.uno-base { position: absolute; left: 0; right: 0; bottom: 0; height: 24px; background: var(--surface-3); }
+.uno-post { position: absolute; left: 30px; bottom: 24px; width: 16px; height: 44px; border-radius: 4px 4px 0 0; background: var(--fg-2); }
+.uno-arm { position: absolute; left: 33px; bottom: 58px; width: 108px; height: 10px; border-radius: 5px; transform-origin: 5px 50%; transition: transform .72s linear;
+  background: repeating-linear-gradient(90deg, var(--bad) 0 18px, #fff 18px 36px); box-shadow: 0 0 0 1px rgba(0, 0, 0, .15); }
+.uno-state { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 10px; font-size: 13px; }
+.uno-btns { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.uno-wait { margin-top: 14px; grid-template-columns: auto minmax(0, 1fr); }
+.uno-h { margin: 18px 0 0; }
+.gcards tr.is-last td { background: var(--accent-soft); }
+.uno-foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 14px; font-size: 12.5px; }
+@media (max-width: 560px) { .gcards.uno-cards th:nth-child(3), .gcards.uno-cards td:nth-child(3) { display: table-cell; } }
+@media (prefers-reduced-motion: reduce) { .uno-arm { transition: none; } .nfc-card.is-new { animation: none; } }
