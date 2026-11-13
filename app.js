@@ -972,7 +972,10 @@
   // The values on screen come from exactly one place: the ESP32, or the simulator.
   const gateData = (src) => (src === 'sim' ? simReport() : src === 'live' ? gateLive.state : null);
   const gateCanControl = (src) => src === 'sim' || (src === 'live' && isManager());
-  const clockNow = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  // Event times: 12-hour clock with the date, e.g. "04:37:51 PM" over "Fri 13 Nov 2026".
+  const gateClock = (d) => d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
+  const gateDay = (d) => d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+  const stampNow = () => { const d = new Date(); return { at: gateClock(d), day: gateDay(d) }; };
 
   function gateConnect() {
     if (!gateUi.timer) gateUi.timer = setInterval(gateTick, 1000);
@@ -1039,7 +1042,7 @@
     gateUi.prev[src] = { gate: s.gate, vehicle: s.vehicle, mode: s.mode, estop: s.estop, sensorOk: s.sensorOk };
     if (!prev) return;
     const add = (text, tone) => {
-      gateUi.log.unshift({ at: clockNow(), text, tone, src });
+      gateUi.log.unshift({ ...stampNow(), text, tone, src });
       gateUi.log.length = Math.min(gateUi.log.length, 12);
     };
     if (s.estop !== prev.estop) add(s.estop ? 'EMERGENCY STOP' : 'Emergency stop released', s.estop ? 'bad' : 'ok');
@@ -1101,7 +1104,7 @@
     gateUi.prev.sim = null;
     gateUi.feedback = null;
     gateSim.timer = setInterval(simTick, 50);
-    gateUi.log.unshift({ at: clockNow(), text: 'Simulation started', tone: 'aw', src: 'sim' });
+    gateUi.log.unshift({ ...stampNow(), text: 'Simulation started', tone: 'aw', src: 'sim' });
     render();
   }
 
@@ -1110,7 +1113,7 @@
     const was = gateSim.on;
     Object.assign(gateSim, { on: false, timer: null, s: null });
     gateUi.prev.sim = null;
-    if (was) gateUi.log.unshift({ at: clockNow(), text: 'Simulation stopped', tone: 'ns', src: 'sim' });
+    if (was) gateUi.log.unshift({ ...stampNow(), text: 'Simulation stopped', tone: 'ns', src: 'sim' });
   }
 
   const simVisual = (s) => (90 * (s.angle - GSIM.closedAngle)) / ((GSIM.openAngle - GSIM.closedAngle) || 1);
@@ -1454,7 +1457,7 @@
 
   function gateLog() {
     if (!gateUi.log.length) return '<p class="note gate-empty">Gate events appear here as they happen.</p>';
-    return gateUi.log.map((e) => `<div class="li gl-row"><span class="li-time">${esc(e.at)}</span><span class="gdot tone-${e.tone}"></span><span class="li-main"><b>${esc(e.text)}</b></span><span class="pill ${e.src === 'sim' ? 'aw' : e.src === 'uno' ? 'teal' : 'ok'}">${e.src === 'sim' ? 'SIM' : e.src === 'uno' ? 'UNO' : 'LIVE'}</span></div>`).join('');
+    return gateUi.log.map((e) => `<div class="li gl-row"><span class="li-time">${esc(e.at)}${e.day ? `<small>${esc(e.day)}</small>` : ''}</span><span class="gdot tone-${e.tone}"></span><span class="li-main"><b>${esc(e.text)}</b></span><span class="pill ${e.src === 'sim' ? 'aw' : e.src === 'uno' ? 'teal' : 'ok'}">${e.src === 'sim' ? 'SIM' : e.src === 'uno' ? 'UNO' : 'LIVE'}</span></div>`).join('');
   }
 
   function gateBadge(src) {
@@ -1544,7 +1547,7 @@
     const who = v.name ? `${v.name} (${fmtUid(v.uid)})` : `Unknown card ${fmtUid(v.uid)}`;
     const text = v.result === 'granted' ? `${who}: access granted`
       : v.result === 'estop' ? `${who}: refused (emergency stop)` : `${who}: access denied`;
-    gateUi.log.unshift({ at: clockNow(), text, tone: v.result === 'granted' ? 'ok' : 'bad', src: 'live' });
+    gateUi.log.unshift({ ...stampNow(), text, tone: v.result === 'granted' ? 'ok' : 'bad', src: 'live' });
     gateUi.log.length = Math.min(gateUi.log.length, 12);
     const reg = gateUi.cardReg;
     if (reg && reg.waiting && (Number(v.at) || 0) >= reg.since - 2000) {
@@ -1847,7 +1850,7 @@
       : result === 'denied' ? `${who}: access denied (not registered)`
         : result === 'added' ? `${who}: registered` : result === 'removed' ? `${who}: removed` : '';
     if (text) {
-      gateUi.log.unshift({ at: clockNow(), text, tone: result === 'denied' ? 'bad' : 'ok', src: 'uno' });
+      gateUi.log.unshift({ ...stampNow(), text, tone: result === 'denied' ? 'bad' : 'ok', src: 'uno' });
       gateUi.log.length = Math.min(gateUi.log.length, 12);
       gatePaint();
     }
@@ -1879,7 +1882,7 @@
         <div class="nfc-stamp">${stamp}</div>
         <div class="nfc-name">${esc(label)}</div>
         <div class="nfc-uid">${esc(l.uid)}</div>
-        <div class="nfc-foot"><span>${esc(l.type)}</span><span>${esc(new Date(l.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }))}</span></div>
+        <div class="nfc-foot"><span>${esc(l.type)}</span><span>${esc(`${gateDay(new Date(l.at))}, ${gateClock(new Date(l.at))}`)}</span></div>
       </div>`;
   }
 

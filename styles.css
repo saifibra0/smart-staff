@@ -1348,6 +1348,7 @@ button.kpi:hover { border-color: var(--accent); }
 .gdot.tone-aw { background: var(--aw); }
 .gdot.tone-ip { background: var(--accent); }
 .gl-row .li-main b { font-weight: 500; }
+.gl-row .li-time { white-space: nowrap; }
 .gate-empty { padding: 4px 16px 16px; }
 .gwire { display: block; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: #fff; }
 .gwire img { display: block; width: 100%; height: auto; }
