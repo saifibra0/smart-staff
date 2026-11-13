@@ -57,7 +57,7 @@
 #define OTA_PASSWORD ""   // an older secrets.h without it: Wi-Fi updates stay off
 #endif
 
-static const char *FW_VERSION = "1.7.0";
+static const char *FW_VERSION = "1.7.1";
 
 /* ================================================================ settings: setup page first, then secrets.h */
 
@@ -565,6 +565,8 @@ static WiFiClientSecure dbTls, authTls;
 static HTTPClient dbHttp, authHttp;
 static String idToken, refreshToken;
 static uint32_t tokenRefreshAtMs = 0, authRetryAtMs = 0, authBackoffMs = 5000;
+static bool authLocked = false;                 // Firebase said TOO_MANY_ATTEMPTS_TRY_LATER
+static const uint32_t AUTH_LOCKED_WAIT_MS = 15UL * 60UL * 1000UL;
 static String lastSeenCmd;
 static bool firstPoll = true;
 static uint8_t netFailures = 0;
@@ -663,7 +665,15 @@ static bool firebaseSignIn() {
     return true;
   }
   Serial.printf("[firebase] sign-in failed (HTTP %d): %s\n", code, reply.c_str());
-  if (code == 400 && !setupActive) { setupWhy = "Firebase rejected the ESP32 account password"; setupRequest = 1; }
+  // After many wrong passwords Firebase blocks sign-in for a while. Every try during the block can
+  // keep it going, so wait 15 minutes; the password itself may be right, so don't open the setup Wi-Fi.
+  authLocked = reply.indexOf("TOO_MANY_ATTEMPTS_TRY_LATER") >= 0;
+  if (authLocked) {
+    Serial.println("[firebase] Firebase is blocking sign-in for a while (too many wrong passwords before); next try in 15 minutes");
+  } else if (code == 400 && !setupActive) {
+    setupWhy = "Firebase rejected the ESP32 account password";
+    setupRequest = 1;
+  }
   return false;
 }
 
@@ -1044,7 +1054,7 @@ void netTask(void *) {
       if (!firebaseSignIn()) {
         netLevel = 1;
         idToken = "";
-        authRetryAtMs = now + authBackoffMs;
+        authRetryAtMs = now + (authLocked ? AUTH_LOCKED_WAIT_MS : authBackoffMs);
         authBackoffMs = min(authBackoffMs * 2, (uint32_t)60000);
         continue;
       }

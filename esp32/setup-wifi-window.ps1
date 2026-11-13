@@ -166,7 +166,7 @@ $timer.Add_Tick({
       if ($line -match '^\[(setup|wifi|firebase)\]') { $log.AppendText($line + "`r`n") }
       if ($line -match 'signed in as') { Finish $true 'ONLINE! The ESP32 is signed in. The website shows LIVE in a few seconds. You can close this window.'; return }
       # Firebase's reason comes on the lines after "sign-in failed".
-      if ($line -match 'TOO_MANY_ATTEMPTS_TRY_LATER') { Finish $false 'Wi-Fi works. Firebase is blocking sign-in for a while after too many wrong passwords. Leave the ESP32 on: it retries every minute and goes online by itself.'; return }
+      if ($line -match 'TOO_MANY_ATTEMPTS_TRY_LATER') { Finish $false 'Wi-Fi works. Firebase is blocking sign-in for a while after too many wrong passwords. Leave the ESP32 on: it tries again every 15 minutes and goes online by itself.'; return }
       if ($line -match 'INVALID_LOGIN_CREDENTIALS|INVALID_PASSWORD|EMAIL_NOT_FOUND') { Finish $false 'Wi-Fi works, but Firebase says the ESP32 account password (box 3) is wrong. Check it and press Save again.'; return }
       if ($line -match '^\[setup\] ERROR (.*)$') { Finish $false $Matches[1]; return }
     }
