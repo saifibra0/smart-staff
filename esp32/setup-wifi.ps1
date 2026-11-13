@@ -65,8 +65,8 @@ Write-Host "Network: $ssid" -ForegroundColor Cyan
 
 # 3. Passwords (typed hidden).
 $wifiPass = Read-Secret "Password of the Wi-Fi '$ssid'"
-$devicePass = Read-Secret 'Password of the ESP32 account (gate-esp32@smart-staff.iot in Firebase)'
-$otaPass = Read-Secret 'Update password for Wi-Fi uploads (8+ characters, or press Enter to skip)'
+$devicePass = Read-Secret 'Password of the ESP32 account (gate-esp32@smart-staff.iot), or press Enter to keep the one already saved'
+$otaPass = Read-Secret 'Update password for Wi-Fi uploads (8+ characters), or press Enter to keep/skip'
 if ($wifiPass -and $wifiPass.Length -lt 8) { throw 'Wi-Fi passwords have at least 8 characters. Run the script again.' }
 if ($otaPass -and $otaPass.Length -lt 8) { throw 'The update password needs at least 8 characters. Run the script again.' }
 
