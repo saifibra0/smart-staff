@@ -89,12 +89,25 @@ const uint8_t UID_MAX = 10;       // RC522 UIDs are 4, 7 or 10 bytes
 const uint8_t EE_MAGIC = 0xC4;    // marks the EEPROM as ours
 const int EE_COUNT = 1, EE_CARDS = 2, EE_SLOT = 1 + UID_MAX;   // slot = length byte + UID bytes
 const unsigned long WAIT_MS = 15000;                            // how long add/remove waits for a tap
-// Receiver gain. This RC522 (chip version 0x82) garbles card replies at medium or high gain and only
-// reads reliably at the lowest gain. If cards are not detected, run "test" and pick the gain that answers.
-const byte READER_GAIN = MFRC522::RxGain_min;
+// Receiver settings. This RC522 (chip version 0x82) hears noise as a garbled answer on almost every
+// poll, even with no card near it, which can hide a real card for a moment (a late gate). Two knobs:
+//   gain  0-7: receiver gain, 0 = 18 dB (lowest) ... 7 = 48 dB. Only the lowest read this card at first.
+//   level 0-15: the weakest signal the receiver accepts (chip default 8). Higher ignores more noise.
+// "scan" tries them all (run it once with no card and once holding the card); "rx <gain> <level>" tries one.
+// Scan on 2026-11-13: gain 0 only saw the card when it touched the reader (taps felt late); gain 2 read
+// it from a few cm away with no noise, with or without the card; gain 4+ was noisy unless level 14-15.
+byte readerGain = 2;
+byte readerLevel = 10;
 
 MFRC522 reader(PIN_SS, PIN_RST);
 Servo gateServo;
+
+// Starts (or restarts) the RC522 with the receiver settings above.
+void readerSetup() {
+  reader.PCD_Init();
+  reader.PCD_SetAntennaGain(readerGain << 4);
+  reader.PCD_WriteRegister(MFRC522::RxThresholdReg, (readerLevel << 4) | 0x04);   // CollLevel 4 = chip default
+}
 
 enum Mode : uint8_t { NORMAL, ADDING, REMOVING };
 Mode mode = NORMAL;
@@ -379,8 +392,7 @@ void help() {
 // "test": checks the reader step by step. Hold a card on the reader while it runs.
 void readerTest() {
   Serial.println(F("[test] reader check (hold a card on the reader now)"));
-  reader.PCD_Init();
-  reader.PCD_SetAntennaGain(READER_GAIN);
+  readerSetup();
   byte version = reader.PCD_ReadRegister(MFRC522::VersionReg);
   Serial.print(F("[test] chip version: 0x")); Serial.println(version, HEX);
 
@@ -418,8 +430,37 @@ void readerTest() {
     Serial.print(F(", garbled ")); Serial.print(error);
     Serial.print(F(", other ")); Serial.println(other);
   }
-  reader.PCD_SetAntennaGain(READER_GAIN);
+  readerSetup();
   Serial.println(F("[test] done"));
+}
+
+// "scan": for each receiver gain and level, polls for 300 ms and counts clean card answers, silence
+// and noise. Run it with no card near the reader, then again holding the card on it: the best setting
+// shows "noise 0" without the card and many "card" answers with it.
+void readerScan() {
+  Serial.println(F("[scan] receiver scan, about 5 s"));
+  const byte gains[] = { 0, 2, 4, 7 };
+  const byte levels[] = { 8, 10, 12, 14, 15 };
+  for (byte gi = 0; gi < sizeof(gains); gi++) {
+    for (byte li = 0; li < sizeof(levels); li++) {
+      reader.PCD_SetAntennaGain(gains[gi] << 4);
+      reader.PCD_WriteRegister(MFRC522::RxThresholdReg, (levels[li] << 4) | 0x04);
+      int card = 0, none = 0, noise = 0;
+      unsigned long start = millis();
+      while (millis() - start < 300) {
+        byte s = cardInField();
+        if (s == 2) { card++; reader.PICC_HaltA(); }
+        else if (s == 0) none++;
+        else noise++;
+        delay(2);
+      }
+      Serial.print(F("[scan] rx ")); Serial.print(gains[gi]); Serial.print(' '); Serial.print(levels[li]);
+      Serial.print(F(": card ")); Serial.print(card); Serial.print(F(", nothing ")); Serial.print(none);
+      Serial.print(F(", noise ")); Serial.println(noise);
+    }
+  }
+  readerSetup();
+  Serial.println(F("[scan] done"));
 }
 
 /* ---------------------------------------------------------------- setup + loop */
@@ -441,9 +482,8 @@ void setup() {
   gateServo.write(GATE_CLOSED_DEG);   // start with the gate closed
 #endif
   SPI.begin();
-  reader.PCD_Init();
+  readerSetup();
   delay(50);
-  reader.PCD_SetAntennaGain(READER_GAIN);
   Serial.println();
   Serial.println(CONTINUOUS_SERVO ? F("Smart Parking RFID card gate (UNO + RC522 + 360-degree servo on D3)")
                                   : F("Smart Parking RFID card gate (UNO + RC522 + 180-degree servo on D3)"));
@@ -521,12 +561,50 @@ void handleCommand(String cmd) {
 #endif
   } else if (cmd == "test") {
     readerTest();
+  } else if (cmd == "scan") {
+    readerScan();
+  } else if (cmd.startsWith("rx ")) {
+    int sp = cmd.indexOf(' ', 3);
+    int g = cmd.substring(3, sp).toInt(), l = cmd.substring(sp + 1).toInt();
+    if (sp > 3 && g >= 0 && g <= 7 && l >= 0 && l <= 15) {
+      readerGain = g; readerLevel = l; readerSetup();
+      Serial.print(F("[rfid] receiver: gain ")); Serial.print(g); Serial.print(F(", level ")); Serial.print(l);
+      Serial.println(F(" (until the next upload)"));
+    } else Serial.println(F("[rfid] use rx <gain 0-7> <level 0-15>, e.g. rx 0 12"));
   } else if (cmd == "help") {
     help();
   } else {
     Serial.print(F("[rfid] unknown command: ")); Serial.println(cmd);
     help();
   }
+}
+
+/* ---------------------------------------------------------------- fast card detection */
+
+// Looking for a card uses WUPA, not REQA: WUPA also reaches a card that is halted or was left
+// half-read by a failed attempt. This clone RC522 reports a garbled answer on almost every poll,
+// even with no card near it, and those garbled frames can leave a real card half-read. With REQA
+// such a card stayed silent until the reader restarted (every 5 s), so taps were seconds late.
+// Now any poll that isn't a clean answer restarts the field, so an arriving card always starts clean.
+
+// 0 = no answer, 1 = garbled answer (this reader's normal noise), 2 = a card answered
+byte cardInField() {
+  reader.PCD_WriteRegister(MFRC522::TxModeReg, 0x00);
+  reader.PCD_WriteRegister(MFRC522::RxModeReg, 0x00);
+  reader.PCD_WriteRegister(MFRC522::ModWidthReg, 0x26);
+  byte atqa[2];
+  byte size = sizeof(atqa);
+  MFRC522::StatusCode st = reader.PICC_WakeupA(atqa, &size);
+  if (st == MFRC522::STATUS_OK || st == MFRC522::STATUS_COLLISION) return 2;
+  return st == MFRC522::STATUS_TIMEOUT ? 0 : 1;
+}
+
+// Switch the reader's field off and on: every card in it starts over, ready for a clean read.
+void restartField() {
+  reader.PCD_AntennaOff();
+  delay(5);
+  reader.PCD_AntennaOn();
+  delay(5);                             // a card needs a few ms of field before it can answer
 }
 
 void loop() {
@@ -550,11 +628,12 @@ void loop() {
   static unsigned long lastInitMs = 0;
   if (millis() - lastInitMs > 5000 && millis() - lastTapMs > 5000) {
     lastInitMs = millis();
-    reader.PCD_Init();
-    reader.PCD_SetAntennaGain(READER_GAIN);
+    readerSetup();
   }
 
-  if (!reader.PICC_IsNewCardPresent() || !reader.PICC_ReadCardSerial()) return;
+  byte inField = cardInField();
+  if (inField == 0) return;
+  if (inField == 1 || !reader.PICC_ReadCardSerial()) { restartField(); return; }   // try again cleanly
 
   String uid = uidText(reader.uid.uidByte, reader.uid.size);
   // The same card held on the reader is read again and again; react once per 1.5 s.
